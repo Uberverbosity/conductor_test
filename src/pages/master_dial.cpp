@@ -1,31 +1,45 @@
-#include <Arduino.h>
 #include "master_dial.h"
+#include <Arduino.h>
 #include <lvgl.h>
 #include <cstdio>
-#include "protocol/helix_protocol.h"
 
-// ---------------- Internal State (private to this file) ----------------
-static lv_obj_t* dial_arc;
-static lv_obj_t* dial_label;
-static lv_obj_t* dial_function;
-static const lv_color_t DIAL_BG_COLOR        = lv_color_hex(0x000000);  // Black
-static const lv_color_t DIAL_ARC_MAIN_COLOR  = lv_color_hex(0xCCCCCC);  // Light gray
-static const lv_color_t DIAL_ARC_IND_COLOR   = lv_color_hex(0x44CC44);  // Green
-static const lv_color_t DIAL_FONT_COLOR      = lv_color_hex(0xFFFFFF);  // White
-static int dial_value = 50;
+// ---------------- Internal UI Objects ----------------
 
-// ---------------- Internal Helper ----------------
-static inline void dial_update_label(int dial_value) {
+static lv_obj_t* dial_arc      = nullptr;
+static lv_obj_t* dial_label    = nullptr;
+static lv_obj_t* dial_function = nullptr;
+
+// ---------------- Styling ----------------
+
+static const lv_color_t DIAL_BG_COLOR       = lv_color_hex(0x000000);
+static const lv_color_t DIAL_ARC_MAIN_COLOR = lv_color_hex(0xCCCCCC);
+static const lv_color_t DIAL_ARC_IND_COLOR  = lv_color_hex(0x44CC44);
+static const lv_color_t DIAL_FONT_COLOR     = lv_color_hex(0xFFFFFF);
+
+// ---------------- State ----------------
+
+// Absolute dial value (0–100 UI scale)
+static int dial_value = 0;
+
+// ---------------- Helpers ----------------
+
+static void dial_update()
+{
+    if (!dial_arc || !dial_label)
+        return;
+
+    lv_arc_set_value(dial_arc, dial_value);
+
     char buf[8];
     snprintf(buf, sizeof(buf), "%d", dial_value);
     lv_label_set_text(dial_label, buf);
 }
 
+// ---------------- Public API ----------------
 
-// ---------------- Public API Implementations ----------------
 void master_dial_create(lv_obj_t* parent)
 {
-    // ----- DIAL ----
+    // Background
     lv_obj_set_style_bg_color(parent, DIAL_BG_COLOR, 0);
 
     // ----- ARC -----
@@ -33,7 +47,7 @@ void master_dial_create(lv_obj_t* parent)
     lv_obj_set_size(dial_arc, 220, 220);
     lv_obj_center(dial_arc);
 
-    lv_obj_remove_style(dial_arc, NULL, LV_PART_KNOB);
+    lv_obj_remove_style(dial_arc, nullptr, LV_PART_KNOB);
     lv_obj_set_style_arc_rounded(dial_arc, false, LV_PART_MAIN);
     lv_obj_set_style_arc_rounded(dial_arc, false, LV_PART_INDICATOR);
 
@@ -45,8 +59,10 @@ void master_dial_create(lv_obj_t* parent)
     lv_arc_set_start_angle(dial_arc, 145);
     lv_arc_set_end_angle(dial_arc, 35);
 
+    lv_arc_set_range(dial_arc, 0, 100);
+
     lv_obj_set_style_arc_color(dial_arc, DIAL_ARC_MAIN_COLOR, LV_PART_MAIN);
-    lv_obj_set_style_arc_color(dial_arc, DIAL_ARC_IND_COLOR, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_color(dial_arc, DIAL_ARC_IND_COLOR,  LV_PART_INDICATOR);
 
     // ----- CENTER LABEL -----
     dial_label = lv_label_create(parent);
@@ -62,25 +78,27 @@ void master_dial_create(lv_obj_t* parent)
     lv_obj_set_style_text_color(dial_function, DIAL_FONT_COLOR, 0);
 
     // Initial state
-    lv_arc_set_value(dial_arc, dial_value);
-    dial_update_label(dial_value);
+    dial_value = 0;
+    dial_update();
 }
 
-void master_dial_set_value(int delta)
+void master_dial_set_absolute(int value)
 {
-    // UI optimism: move visually immediately
-    dial_value += delta;
-    if (dial_value < 0)   dial_value = 0;
-    if (dial_value > 100) dial_value = 100;
+    dial_value = value;
 
-    lv_arc_set_value(dial_arc, dial_value);
-    dial_update_label(dial_value);
+    if (dial_value < 0)
+        dial_value = 0;
+    if (dial_value > 100)
+        dial_value = 100;
 
-    // Protocol intent
-    helix_volume_delta(delta);
+    dial_update();
 
-    Serial.printf("Master Dial: %d\n", dial_value);
+    Serial.printf("[UI] Dial absolute = %d\n", dial_value);
+}
 
+void master_dial_set_delta(int delta)
+{
+    master_dial_set_absolute(dial_value + delta);
 }
 
 int master_dial_get_value()

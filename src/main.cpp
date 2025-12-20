@@ -1,41 +1,21 @@
 #include <Arduino.h>
+#include <lvgl.h>
+#include <TFT_eSPI.h>
+
 #include "pages/master_dial.h"
 #include "protocol/helix_protocol.h"
 
-// TFT / LVGL order matters!
-#include <TFT_eSPI.h>
-#include <lvgl.h>
-
-#define LV_LVGL_TFT_ESPI_IMPLEMENTATION
-
-// Global display object
-TFT_eSPI tft = TFT_eSPI();
-
-// function prototypes so setup() can call them
-void init_display();
-void my_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *color_p);
-
-// ---------------- Pin Mapping ----------------
-#define PIN_BL      8   // Backlight LOW = ON
+// ================== PINS ==================
+#define PIN_BL      8
 #define PIN_ENC_A   6
 #define PIN_ENC_B   7
 #define PIN_ENC_BTN 9
-#define DSP_RX_PIN 20   // ESP receives from DSP (red wire → RX1)
-#define DSP_TX_PIN 21   // ESP transmits to DSP (white wire → TX1)
 
+#define DSP_RX_PIN  20
+#define DSP_TX_PIN  21
 
-// ---------------- Encoder Globals ----------------
-static volatile int enc_delta = 0;
-static volatile uint8_t prev_state = 0;
-static volatile bool enc_pressed = false;
-
-// ---------------- Gray Code Table ----------------
-static const int8_t transition_table[4][4] = {
-    {  0, -1, +1,  0 },
-    { +1,  0,  0, -1 },
-    { -1,  0,  0, +1 },
-    {  0, +1, -1,  0 }
-};
+// ================== DISPLAY ==================
+TFT_eSPI tft = TFT_eSPI();
 
 void my_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *color_p)
 {
@@ -50,54 +30,53 @@ void my_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *color_p)
     lv_display_flush_ready(disp);
 }
 
-void init_display()
+// ================== ENCODER (POLLING) ==================
+static uint8_t enc_prev = 0;
+static int enc_accum = 0;
+
+// Quadrature decode table
+static const int8_t quad_table[4][4] = {
+    {  0, -1, +1,  0 },
+    { +1,  0,  0, -1 },
+    { -1,  0,  0, +1 },
+    {  0, +1, -1,  0 }
+};
+
+static inline void poll_encoder()
 {
-    tft.init();
-    tft.setRotation(1);
-    tft.fillScreen(TFT_BLACK);
-
-    pinMode(8, OUTPUT);
-    digitalWrite(8, LOW);
-}
-
-// ---------------- Encoder ISR ----------------
-void IRAM_ATTR enc_isr() {
     uint8_t a = digitalRead(PIN_ENC_A);
     uint8_t b = digitalRead(PIN_ENC_B);
-    uint8_t state = (a << 1) | b;
+    uint8_t cur = (a << 1) | b;
 
-    enc_delta += transition_table[prev_state][state];
-    prev_state = state;
+    int8_t delta = quad_table[enc_prev][cur];
+    enc_prev = cur;
+
+    if (delta != 0) {
+        enc_accum += delta;
+    }
 }
 
-void IRAM_ATTR enc_btn_isr() {
-    enc_pressed = !digitalRead(PIN_ENC_BTN);   // active low
-}
-
-// ---------------- Setup ----------------
-void setup() {
+// ================== SETUP ==================
+void setup()
+{
     Serial.begin(115200);
-    delay(300);
-    
-    // -------- GPIO Setup --------
+    delay(200);
+
+    // GPIO
     pinMode(PIN_BL, OUTPUT);
-    digitalWrite(PIN_BL, LOW);   // Backlight ON
+    digitalWrite(PIN_BL, LOW);
 
     pinMode(PIN_ENC_A, INPUT_PULLUP);
     pinMode(PIN_ENC_B, INPUT_PULLUP);
     pinMode(PIN_ENC_BTN, INPUT_PULLUP);
 
-    attachInterrupt(PIN_ENC_A,  enc_isr, CHANGE);
-    attachInterrupt(PIN_ENC_B,  enc_isr, CHANGE);
-    attachInterrupt(PIN_ENC_BTN, enc_btn_isr, CHANGE);
-
-    // -------- LVGL Core Init --------
+    // LVGL
     lv_init();
 
-    // -------- TFT Driver Init (SPI + GC9A01A) --------
-    init_display();
+    tft.init();
+    tft.setRotation(1);
+    tft.fillScreen(TFT_BLACK);
 
-    // -------- LVGL Display Object --------
     lv_display_t* disp = lv_display_create(240, 240);
 
     static uint16_t buf1[240 * 40];
@@ -114,46 +93,47 @@ void setup() {
 
     master_dial_create(lv_scr_act());
 
-    Serial.println("Setup complete.");
+    // DSP UART
     Serial1.begin(
-    230400,
-    SERIAL_8N1,
-    DSP_RX_PIN,
-    DSP_TX_PIN
+        230400,
+        SERIAL_8N1,
+        DSP_RX_PIN,
+        DSP_TX_PIN
     );
+
+    delay(300);
     helix_begin(Serial1);
 
+    // Initialize encoder state
+    enc_prev = (digitalRead(PIN_ENC_A) << 1) | digitalRead(PIN_ENC_B);
+
+    Serial.println("[BOOT] Setup complete");
 }
 
-// -------------------- Loop --------------------
+// ================== LOOP ==================
 void loop()
 {
+    // --- Protocol ---
     helix_loop();
 
-    // -------- LVGL Tick --------
+    // --- LVGL ---
     static uint32_t last = 0;
     uint32_t now = millis();
     lv_tick_inc(now - last);
     last = now;
+    lv_timer_handler();
 
-    lv_timer_handler();   // let LVGL render
+    // --- Encoder Poll (1–2 kHz effective) ---
+    poll_encoder();
 
-    // -------- Encoder Detents --------
-    noInterrupts();
-    int delta = enc_delta;
-    enc_delta = 0;
-    interrupts();
+    // Drain encoder
+    if (enc_accum != 0) {
+        int delta = enc_accum;
+        enc_accum = 0;
 
-    if (delta != 0) {
-        master_dial_set_value(delta);
+        Serial.printf("[ENC] delta=%d\n", delta);
+        helix_volume_delta(delta);
     }
 
-    // -------- Encoder Button --------
-    static bool last_btn = false;
-    if (enc_pressed != last_btn) {
-        Serial.printf("Button: %s\n", enc_pressed ? "PRESSED" : "RELEASED");
-        last_btn = enc_pressed;
-    }
-
-    delay(5);   // keep CPU cool, LVGL tolerates this fine
+    delay(2);
 }
