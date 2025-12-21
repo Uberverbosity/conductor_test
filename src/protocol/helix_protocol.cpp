@@ -31,6 +31,7 @@ enum HelixHS {
     HS_WAIT_SLOT2,
     HS_WAIT_TONE,
     HS_WAIT_FINAL,
+    HS_WAIT_FD_CHALLENGE,
     HS_READY
 };
 
@@ -38,6 +39,7 @@ static HelixHS hsState = HS_IDLE;
 static bool ready = false;
 static bool handshakeLocked = false;
 static bool handshakeInProgress = false;
+static uint32_t hs7AckMs = 0;
 
 // ================= HANDSHAKE PACKETS =================
 
@@ -49,6 +51,7 @@ static const uint8_t HS4[] = {0x42,0x03,0xFC,0x01,0x2A,0x06,0x30};
 static const uint8_t HS5[] = {0x42,0x03,0xFC,0x01,0x2A,0x07,0x31};
 static const uint8_t HS6[] = {0x42,0x03,0xFC,0x01,0x2A,0x09,0x33};
 static const uint8_t HS7[] = {0x42,0x05,0xFA,0x01,0x2B,0x01,0x01,0x01,0x2E};
+static const uint8_t HS_FD_REPLY[] = {0x42, 0x06,0xF9, 0x01, 0x33, 0x00, 0x02, 0x01, 0x06, 0x3C};
 
 // ================= RX CAPTURE =================
 
@@ -99,7 +102,6 @@ static void resetHandshake()
     ready = false;
     handshakeLocked = false;
     handshakeInProgress = true;
-
     vol1.valid = false;
     capLen = 0;
     hsState = HS_WAIT_ACK0;
@@ -145,12 +147,30 @@ static void decode_volume_snapshot(const uint8_t *buf)
 static void processFrame()
 {
     uint8_t type = capBuf[2];
+
+    if (type == 0xFD && capBuf[4] == 0x33) {
+        uint8_t reason = capBuf[5];
+
+        Serial.printf("[HELIX] FD obj=33 reason=%02X\n", reason);
+
+        // --- FD: config change → full resync required ---
+        if (reason == 0x02) {
+            Serial.println("[HELIX] DSP requests full resync");
+
+            handshakeLocked = false;     // ← force unlock
+            handshakeInProgress = false; // ← allow restart
+            resetHandshake();
+            return;
+        }
+    }
+
     printHex("[RX]", capBuf, capLen);
 
     // --- Always decode config/state ---
     if (type == 0xAF)
+        Serial.println("[DBG] AF blob received");
         decode_volume_blob(capBuf);
-
+    
     if (type == 0xF9 && capBuf[4] == 0x2A && capBuf[5] == 0x04)
         decode_volume_snapshot(capBuf);
 
@@ -197,6 +217,7 @@ static void processFrame()
 
     case HS_WAIT_SLOT2:
         if (type == 0xF9 && capBuf[5] == 0x07) {
+            delayMicroseconds(250);
             sendHS(HS6, sizeof(HS6), "HS6");
             hsState = HS_WAIT_TONE;
         }
@@ -211,15 +232,38 @@ static void processFrame()
 
     case HS_WAIT_FINAL:
         if (type == 0xFB && capBuf[4] == 0x2B) {
-            ready = true;
-            handshakeLocked = true;
-            handshakeInProgress = false;
-            hsState = HS_READY;
-            Serial.println("[HELIX] READY");
+            hs7AckMs = millis();
+
+            ready = true;                 // ← CRITICAL
+            handshakeInProgress = false;  // handshake is functionally done
+
+            hsState = HS_WAIT_FD_CHALLENGE;
+            Serial.println("[HELIX] HS7 ACK, READY asserted");
         }
         break;
 
-    default:
+    case HS_WAIT_FD_CHALLENGE:
+        if (type == 0xFD && capBuf[4] == 0x33) {
+            dsp->write(HS_FD_REPLY, sizeof(HS_FD_REPLY));
+            dsp->flush();
+            Serial.println("[HELIX] FD challenge answered");
+           handshakeLocked = true;
+            handshakeInProgress = false;
+            hsState = HS_READY;
+            Serial.println("[HELIX] READY (ownership latched)");
+            break;
+        }
+
+        // No FD challenge → assume ownership
+        if (millis() - hs7AckMs > 100) {   // 50–100 ms is plenty
+            handshakeLocked = true;
+            handshakeInProgress = false;
+            hsState = HS_READY;
+            Serial.println("[HELIX] READY (no FD challenge)");
+        }
+        break;
+
+        default:
         break;
     }
 }
@@ -230,6 +274,7 @@ void helix_begin(HardwareSerial& dspSerial)
 {
     dsp = &dspSerial;
     resetHandshake();
+    Serial.println("Boot Handshake");
 }
 
 bool helix_ready()
@@ -247,6 +292,7 @@ void helix_loop()
 
     while (dsp->available()) {
         uint8_t b = dsp->read();
+
         lastDspRxMs = millis();
 
         if (capLen < FRAME_MAX)
@@ -259,12 +305,6 @@ void helix_loop()
         processFrame();
         capLen = 0;
     }
-
-    // ONLY re-handshake on true DSP silence
-    // if (ready && millis() - lastDspRxMs > DSP_SILENCE_MS) {
-    //     Serial.println("[HELIX] DSP silence → rehandshake");
-    //     resetHandshake();
-    // }
 }
 
 // ================= VOLUME DELTA =================
