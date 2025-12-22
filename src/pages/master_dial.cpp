@@ -18,15 +18,9 @@ static const lv_color_t DIAL_FONT_COLOR = lv_color_hex(0xFFFFFF);
 
 typedef struct {
     lv_color_t color;
-    const char* label;
 } DialSlotState;
 
-static DialSlotState slots[DIAL_SLOT_COUNT] = {
-    { lv_color_hex(0x44CC44), "MASTER\nVOLUME" },   // VOL1
-    { lv_color_hex(0xCC4444), "SUB\nLEVEL"    },   // VOL2
-    { lv_color_hex(0x4488CC), "DIGITAL\nLEVEL"},   // VOL3
-    { lv_color_hex(0xCCCC44), "REAR\nLEVEL"   }    // VOL4
-};
+static DialSlotState slots[DIAL_SLOT_COUNT];
 
 // ================= ACTIVE STATE =================
 
@@ -103,7 +97,6 @@ void master_dial_create(lv_obj_t* parent)
     dial_function = lv_label_create(parent);
     lv_obj_set_style_text_font(dial_function, &lv_font_montserrat_20, 0);
     lv_obj_align(dial_function, LV_ALIGN_BOTTOM_MID, 0, -35);
-    lv_label_set_text(dial_function, slots[active_slot].label);
     lv_obj_set_style_text_color(dial_function, DIAL_FONT_COLOR, 0);
 
     // Initial state
@@ -142,9 +135,6 @@ void master_dial_set_slot(DialSlot slot)
 
     active_slot = (DialSlot)slot;
 
-    if (dial_function)
-        lv_label_set_text(dial_function, slots[active_slot].label);
-
     dial_apply_color();
 
     Serial.printf("[UI] Active dial slot = %u\n", slot);
@@ -164,4 +154,12 @@ void master_dial_set_color(DialSlot slot, uint8_t r, uint8_t g, uint8_t b)
         "[UI] Slot %u color = #%02X%02X%02X\n",
         slot, r, g, b
     );
+}
+
+void master_dial_set_label(const char* text)
+{
+    if (!dial_function)
+        return;
+
+    lv_label_set_text(dial_function, text ? text : "");
 }

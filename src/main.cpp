@@ -56,6 +56,21 @@ static inline void poll_encoder()
     }
 }
 
+static bool btn_prev = true;   // INPUT_PULLUP = idle HIGH
+
+static inline void poll_encoder_button()
+{
+    bool now = digitalRead(PIN_ENC_BTN);
+
+    // Falling edge = button press
+    if (btn_prev && !now) {
+        Serial.println("[BTN] Encoder pressed");
+        helix_cycle_slot();   // <-- slot cycling hook
+    }
+
+    btn_prev = now;
+}
+
 // ================== SETUP ==================
 void setup()
 {
@@ -125,6 +140,7 @@ void loop()
 
     // --- Encoder Poll (1–2 kHz effective) ---
     poll_encoder();
+    poll_encoder_button();
 
     // Drain encoder
     if (enc_accum != 0) {

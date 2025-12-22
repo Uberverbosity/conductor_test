@@ -41,6 +41,8 @@ static bool handshakeLocked = false;
 static bool handshakeInProgress = false;
 static uint32_t hs7AckMs = 0;
 uint8_t slot_id = 0;
+static bool slotInitialized = false;
+
 
 // ================= HANDSHAKE PACKETS =================
 
@@ -63,6 +65,7 @@ static uint32_t lastByteUs = 0;
 // ================= VOLUME MODEL =================
 
 struct VolumeModel {
+    uint8_t assign;
     uint8_t steps;
     float   range_dB;
     float   step_dB;
@@ -70,7 +73,22 @@ struct VolumeModel {
     bool    valid;
 };
 
-static VolumeModel vol1 = {0};
+#define NUM_SLOTS 4
+#define SLOT_STRIDE 10
+#define SLOT_BASE0 22
+
+static VolumeModel volume[NUM_SLOTS] = {};
+static uint8_t activeSlot = 0;
+
+static uint8_t validSlotIdx[NUM_SLOTS];
+static uint8_t numValidSlots = 0;
+
+static const uint8_t SLOT_BASE[NUM_SLOTS] = {
+    SLOT_BASE0 + 0 * SLOT_STRIDE,  // VOL1
+    SLOT_BASE0 + 1 * SLOT_STRIDE,  // VOL2
+    SLOT_BASE0 + 2 * SLOT_STRIDE,  // VOL3
+    SLOT_BASE0 + 3 * SLOT_STRIDE   // VOL4
+};
 
 // ================= UTILS =================
 
@@ -94,6 +112,17 @@ static void sendHS(const uint8_t* pkt, size_t len, const char* label)
     Serial.printf("[HELIX] %s send\n", label);
 }
 
+static const char* slot_label_from_assign(uint8_t assign)
+{
+    switch (assign) {
+        case 0x00: return "MASTER\nVOLUME";
+        case 0x01: return "SUB\nLEVEL";
+        case 0x02: return "DIGITAL\nLEVEL";
+        case 0x03: return "REAR\nLEVEL";
+        default:   return "";
+    }
+}
+
 // ================= HANDSHAKE RESET =================
 
 static void resetHandshake()
@@ -103,7 +132,9 @@ static void resetHandshake()
     ready = false;
     handshakeLocked = false;
     handshakeInProgress = true;
-    vol1.valid = false;
+    for (int s = 0; s < NUM_SLOTS; s++) {
+        volume[s].valid = false;
+    }
     capLen = 0;
     hsState = HS_WAIT_ACK0;
 
@@ -114,50 +145,98 @@ static void resetHandshake()
 
 static void decode_volume_blob(const uint8_t *buf)
 {
-    // 🔒 Ignore blob data until handshake is functionally complete
     if (hsState < HS_WAIT_BLOB)
         return;
 
-    const int o = 22;   // slot 1 base
+    for (int s = 0; s < NUM_SLOTS; s++) {
 
-    uint8_t steps = buf[o + 4];
-    if (!steps) return;
+        VolumeModel &vm = volume[s];
+        const int o = SLOT_BASE[s];
 
-    float range_dB = u16le(&buf[o + 6]) / 10.0f;
+        uint8_t assign = buf[o];        // slot assignment
+        uint8_t steps  = buf[o + 4];    // number of steps
 
-    vol1.steps   = steps;
-    vol1.range_dB = range_dB;
-    vol1.step_dB  = range_dB / steps;
-    vol1.valid    = true;
-    
-    // ---- Extract and apply VOL1 color ----
-    uint8_t r = buf[o + 1];
-    uint8_t g = buf[o + 2];
-    uint8_t b = buf[o + 3];
+        vm.assign = assign;
 
-    Serial.printf(
-        "[UI] blob color VOL1 #%02X%02X%02X\n",
-        r, g, b
-    );
+        // ---- VALIDITY GATE ----
+        if (assign == 0xFF || steps == 0) {
+            vm.valid = false;
+            Serial.printf("[VOL%d] disabled\n", s + 1);
+            continue;
+        }
 
-    master_dial_set_color(DIAL_SLOT_VOL1, r, g, b);
-    
-    Serial.printf("[VOL] steps=%u range=%.1f dB step=%.2f dB\n",
-                  vol1.steps, vol1.range_dB, vol1.step_dB);
+        float range_dB = u16le(&buf[o + 6]) / 10.0f;
+
+        vm.steps    = steps;
+        vm.range_dB = range_dB;
+        vm.step_dB  = range_dB / steps;
+        vm.valid    = true;
+
+        // ---- SLOT COLOR ----
+        uint8_t r = buf[o + 1];
+        uint8_t g = buf[o + 2];
+        uint8_t b = buf[o + 3];
+
+        master_dial_set_color((DialSlot)s, r, g, b);
+
+        Serial.printf(
+            "[VOL%d] assign=%02X steps=%u range=%.1f step=%.2f\n",
+            s + 1,
+            assign,
+            vm.steps,
+            vm.range_dB,
+            vm.step_dB
+        );
+    }
+
+    // ---- REBUILD VALID SLOT LIST ----
+    numValidSlots = 0;
+    for (int s = 0; s < NUM_SLOTS; s++) {
+        if (volume[s].valid) {
+            validSlotIdx[numValidSlots++] = s;
+        }
+    }
+
+    // ---- Initialize active slot once config is known ----
+    if (!slotInitialized && numValidSlots > 0) {
+        helix_set_active_slot(validSlotIdx[0]);
+        slotInitialized = true;
+    }
+
 }
+
+
 
 static void decode_volume_snapshot(const uint8_t *buf)
 {
-    if (!vol1.valid) return;
+    const int SNAP_BASE = 6;
 
-    uint8_t idx = buf[6];
-    if (idx > vol1.steps) idx = vol1.steps;
+    for (int s = 0; s < NUM_SLOTS; s++) {
 
-    vol1.index = idx;
+        VolumeModel &vm = volume[s];
+        if (!vm.valid)
+            continue;
 
-    int ui = map(vol1.index, 0, vol1.steps, 0, 100);
-    master_dial_set_absolute(ui);
+        uint8_t idx = buf[SNAP_BASE + s];
+        if (idx > vm.steps)
+            idx = vm.steps;
+
+        vm.index = idx;
+
+        Serial.printf(
+            "[SNAP] slot=%d idx=%d %s\n",
+            s,
+            vm.index,
+            (s == activeSlot) ? "<ACTIVE>" : ""
+        );
+
+        if (s == activeSlot) {
+            int ui = map(vm.index, 0, vm.steps, 0, 100);
+            master_dial_set_absolute(ui);
+        }
+    }
 }
+
 
 static int slot_from_fa(uint8_t slot_id)
 {
@@ -170,6 +249,49 @@ static int slot_from_fa(uint8_t slot_id)
         default:   return -1;
     }
 }
+
+void helix_set_active_slot(uint8_t slot)
+{
+    if (slot >= NUM_SLOTS)
+        return;
+
+    VolumeModel &vm = volume[slot];
+
+    if (!vm.valid)
+        return;
+
+    activeSlot = slot;
+
+    // ---- Update UI context (slot identity) ----
+    master_dial_set_slot((DialSlot)slot);
+
+    master_dial_set_label(
+        slot_label_from_assign(vm.assign)
+    );
+
+    // ---- Update UI value (authoritative snapshot) ----
+    int ui = map(vm.index, 0, vm.steps, 0, 100);
+    master_dial_set_absolute(ui);
+
+    Serial.printf("[HELIX] active slot = %u\n", slot);
+}
+
+void helix_cycle_slot()
+{
+    if (numValidSlots < 2)
+        return;
+
+    static uint8_t idx = 0;
+
+    idx = (idx + 1) % numValidSlots;
+    helix_set_active_slot(validSlotIdx[idx]);
+}
+
+uint8_t helix_get_active_slot()
+{
+    return activeSlot;
+}
+
 
 void helix_force_resync()
 {
@@ -343,7 +465,7 @@ void helix_begin(HardwareSerial& dspSerial)
 
 bool helix_ready()
 {
-    return ready && vol1.valid;
+    return ready && volume[activeSlot].valid;
 }
 
 // ================= LOOP =================
@@ -375,33 +497,42 @@ void helix_loop()
 
 void helix_volume_delta(int8_t clicks)
 {
-    if (!helix_ready())
+    if (!ready)
         return;
 
-    int next = (int)vol1.index + clicks;
+    VolumeModel &vm = volume[activeSlot];
 
-    if (next < 0) next = 0;
-    if (next > vol1.steps) next = vol1.steps;
-    if (next == vol1.index) return;
+    if (!vm.valid)
+        return;
 
-    vol1.index = (uint8_t)next;
+    int next = (int)vm.index + clicks;
 
-    uint8_t volCode = VOL_MIN + vol1.index;
+    if (next < 0)           next = 0;
+    if (next > vm.steps)    next = vm.steps;
+    if (next == vm.index)   return;
 
-    const uint8_t wake[] = {0x42, 0x06};
+    vm.index = (uint8_t)next;
+
+    uint8_t volCode = VOL_MIN + vm.index;
+
+    const uint8_t wake[] = { 0x42, 0x06 };
     dsp->write(wake, sizeof(wake));
     dsp->flush();
     delayMicroseconds(FRAME_DELAY_US);
 
     uint8_t body[] = {
-        0xF9, 0x01, 0x2B, 0x04, 0x00,
-        vol1.index, 0x01, volCode
+        0xF9, 0x01, 0x2B, 0x04,
+        activeSlot,     // ← slot selector (0–3)
+        vm.index,
+        0x01,
+        volCode
     };
 
     printHex("[TX VOL]", body, sizeof(body));
     dsp->write(body, sizeof(body));
     dsp->flush();
 
-    int ui = map(vol1.index, 0, vol1.steps, 0, 100);
+    int ui = map(vm.index, 0, vm.steps, 0, 100);
     master_dial_set_absolute(ui);
 }
+

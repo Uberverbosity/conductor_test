@@ -23,3 +23,4 @@ typedef enum {
 
 void master_dial_set_slot(DialSlot slot);
 void master_dial_set_color(DialSlot slot, uint8_t r, uint8_t g, uint8_t b);
+void master_dial_set_label(const char* text);
