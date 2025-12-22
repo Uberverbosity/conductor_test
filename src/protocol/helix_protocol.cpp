@@ -40,6 +40,7 @@ static bool ready = false;
 static bool handshakeLocked = false;
 static bool handshakeInProgress = false;
 static uint32_t hs7AckMs = 0;
+uint8_t slot_id = 0;
 
 // ================= HANDSHAKE PACKETS =================
 
@@ -113,6 +114,10 @@ static void resetHandshake()
 
 static void decode_volume_blob(const uint8_t *buf)
 {
+    // 🔒 Ignore blob data until handshake is functionally complete
+    if (hsState < HS_WAIT_BLOB)
+        return;
+
     const int o = 22;   // slot 1 base
 
     uint8_t steps = buf[o + 4];
@@ -124,7 +129,19 @@ static void decode_volume_blob(const uint8_t *buf)
     vol1.range_dB = range_dB;
     vol1.step_dB  = range_dB / steps;
     vol1.valid    = true;
+    
+    // ---- Extract and apply VOL1 color ----
+    uint8_t r = buf[o + 1];
+    uint8_t g = buf[o + 2];
+    uint8_t b = buf[o + 3];
 
+    Serial.printf(
+        "[UI] blob color VOL1 #%02X%02X%02X\n",
+        r, g, b
+    );
+
+    master_dial_set_color(DIAL_SLOT_VOL1, r, g, b);
+    
     Serial.printf("[VOL] steps=%u range=%.1f dB step=%.2f dB\n",
                   vol1.steps, vol1.range_dB, vol1.step_dB);
 }
@@ -142,12 +159,56 @@ static void decode_volume_snapshot(const uint8_t *buf)
     master_dial_set_absolute(ui);
 }
 
+static int slot_from_fa(uint8_t slot_id)
+{
+    switch (slot_id) {
+        case 0x90: return DIAL_SLOT_VOL1;
+        // future:
+        // case 0x91: return DIAL_SLOT_VOL2;
+        // case 0x92: return DIAL_SLOT_VOL3;
+        // case 0x93: return DIAL_SLOT_VOL4;
+        default:   return -1;
+    }
+}
+
+void helix_force_resync()
+{
+    Serial.println("[HELIX] manual resync requested");
+
+    handshakeLocked = false;
+    handshakeInProgress = false;
+    ready = false;
+
+    resetHandshake();
+}
+
 // ================= FRAME PROCESSOR =================
 
 static void processFrame()
 {
     uint8_t type = capBuf[2];
 
+    // Live color preview (no resync)
+    if (type == 0xFA && capBuf[4] == 0x33 && capLen >= 9) {
+
+        uint8_t slot_id = capBuf[5];   // 0x90 = VOL1
+        uint8_t r = capBuf[6];
+        uint8_t g = capBuf[7];
+        uint8_t b = capBuf[8];
+
+        DialSlot slot = (DialSlot)slot_from_fa(slot_id);
+        if (slot < DIAL_SLOT_COUNT) {
+            Serial.printf(
+                "[UI] live color slot=%d #%02X%02X%02X\n",
+                slot, r, g, b
+            );
+            master_dial_set_color(slot, r, g, b);
+        }
+        
+        return;
+    }
+
+    
     if (type == 0xFD && capBuf[4] == 0x33) {
         uint8_t reason = capBuf[5];
 
@@ -167,16 +228,19 @@ static void processFrame()
     printHex("[RX]", capBuf, capLen);
 
     // --- Always decode config/state ---
-    if (type == 0xAF)
+    if (type == 0xAF) {
         Serial.println("[DBG] AF blob received");
         decode_volume_blob(capBuf);
+    }
     
-    if (type == 0xF9 && capBuf[4] == 0x2A && capBuf[5] == 0x04)
+    if (type == 0xF9 && capBuf[4] == 0x2A && capBuf[5] == 0x04) {
         decode_volume_snapshot(capBuf);
+    }
 
     // --- Handshake FSM stops permanently after READY ---
-    if (handshakeLocked)
+    if (handshakeLocked) {
         return;
+    }
 
     switch (hsState) {
 

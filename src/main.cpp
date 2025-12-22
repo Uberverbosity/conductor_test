@@ -135,5 +135,15 @@ void loop()
         helix_volume_delta(delta);
     }
 
+    if (Serial.available()) {
+        char c = Serial.read();
+        if (c == 'h') {
+            helix_force_resync();
+        }
+        if (c == 'r') {
+            ESP.restart();
+        }
+    }
+
     delay(2);
 }

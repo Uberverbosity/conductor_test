@@ -7,5 +7,5 @@ bool helix_ready();
 
 uint8_t helix_get_master_index();
 
-// Encoder → DSP intent
 void helix_volume_delta(int8_t clicks);
+void helix_force_resync();
