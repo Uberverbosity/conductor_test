@@ -1,8 +1,8 @@
 #include <Arduino.h>
 #include <lvgl.h>
 #include <TFT_eSPI.h>
-
-#include "pages/master_dial.h"
+#include "pages/page_manager.h"
+#include "pages/dial_page.h"
 #include "protocol/helix_protocol.h"
 
 // ================== PINS ==================
@@ -106,7 +106,7 @@ void setup()
 
     lv_display_set_flush_cb(disp, my_flush_cb);
 
-    master_dial_create(lv_scr_act());
+    page_manager_init(lv_scr_act());
 
     // DSP UART
     Serial1.begin(

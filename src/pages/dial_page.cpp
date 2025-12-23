@@ -1,4 +1,4 @@
-#include "master_dial.h"
+#include "dial_page.h"
 #include <Arduino.h>
 #include <lvgl.h>
 #include <cstdio>
@@ -55,7 +55,7 @@ static void dial_update()
 
 // ================= PUBLIC API =================
 
-void master_dial_create(lv_obj_t* parent)
+void dial_page_create(lv_obj_t* parent)
 {
     // Background
     lv_obj_set_style_bg_color(parent, DIAL_BG_COLOR, 0);
@@ -104,7 +104,7 @@ void master_dial_create(lv_obj_t* parent)
     dial_update();
 }
 
-void master_dial_set_absolute(int value)
+void dial_page_set_absolute(int value)
 {
     dial_value = value;
 
@@ -116,19 +116,19 @@ void master_dial_set_absolute(int value)
     Serial.printf("[UI] Dial absolute = %d\n", dial_value);
 }
 
-void master_dial_set_delta(int delta)
+void dial_page_set_delta(int delta)
 {
-    master_dial_set_absolute(dial_value + delta);
+    dial_page_set_absolute(dial_value + delta);
 }
 
-int master_dial_get_value()
+int dial_page_get_value()
 {
     return dial_value;
 }
 
 // ================= NEW SLOT / COLOR API =================
 
-void master_dial_set_slot(DialSlot slot)
+void dial_page_set_slot(DialSlot slot)
 {
     if (slot >= DIAL_SLOT_COUNT)
         return;
@@ -140,7 +140,7 @@ void master_dial_set_slot(DialSlot slot)
     Serial.printf("[UI] Active dial slot = %u\n", slot);
 }
 
-void master_dial_set_color(DialSlot slot, uint8_t r, uint8_t g, uint8_t b)
+void dial_page_set_color(DialSlot slot, uint8_t r, uint8_t g, uint8_t b)
 {
     if (slot >= DIAL_SLOT_COUNT)
         return;
@@ -156,7 +156,7 @@ void master_dial_set_color(DialSlot slot, uint8_t r, uint8_t g, uint8_t b)
     );
 }
 
-void master_dial_set_label(const char* text)
+void dial_page_set_label(const char* text)
 {
     if (!dial_function)
         return;

@@ -1,6 +1,6 @@
 #include "helix_protocol.h"
 #include <Arduino.h>
-#include "pages/master_dial.h"
+#include "pages/dial_page.h"
 
 // ================= CONFIG =================
 
@@ -179,7 +179,7 @@ static void decode_volume_blob(const uint8_t *buf)
         uint8_t g = buf[o + 2];
         uint8_t b = buf[o + 3];
 
-        master_dial_set_color((DialSlot)s, r, g, b);
+        dial_page_set_color((DialSlot)s, r, g, b);
 
         Serial.printf(
             "[VOL%d] assign=%02X steps=%u range=%.1f step=%.2f\n",
@@ -234,7 +234,7 @@ static void decode_volume_snapshot(const uint8_t *buf)
 
         if (s == activeSlot) {
             int ui = map(vm.index, 0, vm.steps, 0, 100);
-            master_dial_set_absolute(ui);
+            dial_page_set_absolute(ui);
         }
     }
 }
@@ -265,15 +265,15 @@ void helix_set_active_slot(uint8_t slot)
     activeSlot = slot;
 
     // ---- Update UI context (slot identity) ----
-    master_dial_set_slot((DialSlot)slot);
+    dial_page_set_slot((DialSlot)slot);
 
-    master_dial_set_label(
+    dial_page_set_label(
         slot_label_from_assign(vm.assign)
     );
 
     // ---- Update UI value (authoritative snapshot) ----
     int ui = map(vm.index, 0, vm.steps, 0, 100);
-    master_dial_set_absolute(ui);
+    dial_page_set_absolute(ui);
 
     Serial.printf("[HELIX] active slot = %u\n", slot);
 }
@@ -326,7 +326,7 @@ static void processFrame()
                 "[UI] live color slot=%d #%02X%02X%02X\n",
                 slot, r, g, b
             );
-            master_dial_set_color(slot, r, g, b);
+            dial_page_set_color(slot, r, g, b);
         }
         
         return;
@@ -535,6 +535,6 @@ void helix_volume_delta(int8_t clicks)
     dsp->flush();
 
     int ui = map(vm.index, 0, vm.steps, 0, 100);
-    master_dial_set_absolute(ui);
+    dial_page_set_absolute(ui);
 }
 
