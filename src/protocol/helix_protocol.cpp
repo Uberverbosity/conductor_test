@@ -118,7 +118,9 @@ static const char* slot_label_from_assign(uint8_t assign)
         case 0x00: return "MASTER\nVOLUME";
         case 0x01: return "SUB\nLEVEL";
         case 0x02: return "DIGITAL\nLEVEL";
-        case 0x03: return "REAR\nLEVEL";
+        case 0x03: return "AUX/HEC 1\nLEVEL";
+        case 0x04: return "AUX/HEC 2\nLEVEL";
+        case 0x05: return "REAR ATTENUATION\nLEVEL";
         default:   return "";
     }
 }
@@ -513,7 +515,7 @@ void helix_volume_delta(int8_t clicks)
 
     vm.index = (uint8_t)next;
 
-    uint8_t volCode = VOL_MIN + vm.index;
+    uint8_t volCode = VOL_MIN + vm.index + activeSlot;
 
     const uint8_t wake[] = { 0x42, 0x06 };
     dsp->write(wake, sizeof(wake));
