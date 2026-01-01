@@ -42,7 +42,22 @@ static bool handshakeInProgress = false;
 static uint32_t hs7AckMs = 0;
 uint8_t slot_id = 0;
 static bool slotInitialized = false;
+static bool configReadyPrinted = false;
 
+// ================= MENU STATES =================
+static bool toneMenuEnabled        = false;
+static bool signalInputMenuEnabled = false;
+static bool soundSetupMenuEnabled  = false;
+static bool bluetoothMenuEnabled   = false;
+static bool menuFlagsPrinted = false;
+
+// ================= TONE STATES =================
+static bool     toneLowValid  = false;
+static bool     toneHighValid = false;
+static int8_t   toneLowDb     = 0;
+static int8_t   toneHighDb    = 0;
+static uint16_t toneLowHz     = 0;
+static uint16_t toneHighHz    = 0;
 
 // ================= HANDSHAKE PACKETS =================
 
@@ -125,6 +140,56 @@ static const char* slot_label_from_assign(uint8_t assign)
     }
 }
 
+static void printMenuStates()
+{
+    Serial.println("\n=== MENU ENABLE FLAGS ===");
+
+    Serial.print("Tone: ");
+    Serial.println(toneMenuEnabled ? "Enabled" : "Disabled");
+
+    Serial.print("Signal Input: ");
+    Serial.println(signalInputMenuEnabled ? "Enabled" : "Disabled");
+
+    Serial.print("Sound Setup: ");
+    Serial.println(soundSetupMenuEnabled ? "Enabled" : "Disabled");
+
+    Serial.print("Bluetooth: ");
+    Serial.println(bluetoothMenuEnabled ? "Enabled" : "Disabled");
+
+    //Serial.println("========================\n");
+}
+
+static void printToneStates()
+{
+    if (toneMenuEnabled) {
+        Serial.println("\n=== TONE CONFIG ===");
+
+        Serial.print("Low Corner: ");
+        Serial.print(toneLowHz);
+        Serial.println(" Hz");
+
+        Serial.print("Low Gain: ");
+        if (toneLowValid) {
+            Serial.printf("%+d dB\n", toneLowDb);
+        } else {
+            Serial.println("Unknown");
+        }
+
+        Serial.print("High Corner: ");
+        Serial.print(toneHighHz);
+        Serial.println(" Hz");
+
+        Serial.print("High Gain: ");
+        if (toneHighValid) {
+            Serial.printf("%+d dB\n", toneHighDb);
+        } else {
+            Serial.println("Unknown");
+        }
+
+        Serial.println("===================\n");
+    }
+}
+
 // ================= HANDSHAKE RESET =================
 
 static void resetHandshake()
@@ -139,6 +204,14 @@ static void resetHandshake()
     }
     capLen = 0;
     hsState = HS_WAIT_ACK0;
+
+    menuFlagsPrinted = false;
+
+    // Reset Tone States
+    toneLowValid  = false;
+    toneHighValid = false;
+    toneLowHz     = 0;
+    toneHighHz    = 0;
 
     sendHS(HS0, sizeof(HS0), "HS0");
 }
@@ -355,6 +428,14 @@ static void processFrame()
     if (type == 0xAF) {
         Serial.println("[DBG] AF blob received");
         decode_volume_blob(capBuf);
+        // ---- Menu enable flags (proven offsets) ----
+        toneMenuEnabled        = capBuf[21];
+        signalInputMenuEnabled = capBuf[19];
+        soundSetupMenuEnabled  = capBuf[18];
+        bluetoothMenuEnabled   = capBuf[20];
+        // ---- Tone corner frequencies ----
+        toneLowHz  = u16le(&capBuf[72]);
+        toneHighHz = u16le(&capBuf[82]);
     }
     
     if (type == 0xF9 && capBuf[4] == 0x2A && capBuf[5] == 0x04) {
@@ -413,6 +494,18 @@ static void processFrame()
 
     case HS_WAIT_TONE:
         if (type == 0xF5 && capBuf[5] == 0x09) {
+            // ---- Tone baseline ----
+            toneLowDb  = (int8_t)capBuf[7];
+            toneHighDb = (int8_t)capBuf[11];
+
+            toneLowValid  = true;
+            toneHighValid = true;
+
+            Serial.printf(
+                "[TONE] baseline low=%+d dB high=%+d dB\n",
+                toneLowDb,
+                toneHighDb
+            );
             sendHS(HS7, sizeof(HS7), "HS7");
             hsState = HS_WAIT_FINAL;
         }
@@ -422,8 +515,14 @@ static void processFrame()
         if (type == 0xFB && capBuf[4] == 0x2B) {
             hs7AckMs = millis();
 
-            ready = true;                 // ← CRITICAL
-            handshakeInProgress = false;  // handshake is functionally done
+            ready = true;
+            handshakeInProgress = false;
+
+            if (!configReadyPrinted) {
+                printMenuStates();
+                printToneStates();
+                configReadyPrinted = true;
+            }
 
             hsState = HS_WAIT_FD_CHALLENGE;
             Serial.println("[HELIX] HS7 ACK, READY asserted");
@@ -435,7 +534,7 @@ static void processFrame()
             dsp->write(HS_FD_REPLY, sizeof(HS_FD_REPLY));
             dsp->flush();
             Serial.println("[HELIX] FD challenge answered");
-           handshakeLocked = true;
+            handshakeLocked = true;
             handshakeInProgress = false;
             hsState = HS_READY;
             Serial.println("[HELIX] READY (ownership latched)");
@@ -469,6 +568,13 @@ bool helix_ready()
 {
     return ready && volume[activeSlot].valid;
 }
+
+// ================== TONE CAPABILITY ================
+bool helix_tone_enabled()      { return toneMenuEnabled; }
+bool helix_tone_low_valid()    { return toneLowValid; }
+bool helix_tone_high_valid()   { return toneHighValid; }
+int8_t helix_tone_low_db()     { return toneLowDb; }
+int8_t helix_tone_high_db()    { return toneHighDb; }
 
 // ================= LOOP =================
 
