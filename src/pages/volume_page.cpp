@@ -1,0 +1,199 @@
+#include "volume_page.h"
+#include <Arduino.h>
+#include <lvgl.h>
+#include <cstdio>
+#include "protocol/helix_protocol.h"
+
+// ================= INTERNAL UI OBJECTS =================
+
+static lv_obj_t* dial_arc      = nullptr;
+static lv_obj_t* dial_label    = nullptr;
+static lv_obj_t* dial_function = nullptr;
+
+// ================= DEFAULT STYLING =================
+
+static const lv_color_t DIAL_BG_COLOR   = lv_color_hex(0x000000);
+static const lv_color_t DIAL_FONT_COLOR = lv_color_hex(0xFFFFFF);
+
+// ================= PER-SLOT STATE =================
+
+typedef struct {
+    lv_color_t color;
+} DialSlotState;
+
+static DialSlotState slots[DIAL_SLOT_COUNT];
+
+// ================= ACTIVE STATE =================
+
+static DialSlot active_slot = DIAL_SLOT_VOL1;
+static int dial_value = 0;
+
+// ================= INTERNAL HELPERS =================
+
+static void dial_apply_color()
+{
+    if (!dial_arc)
+        return;
+
+    lv_obj_set_style_arc_color(
+        dial_arc,
+        slots[active_slot].color,
+        LV_PART_INDICATOR
+    );
+}
+
+static void dial_update()
+{
+    if (!dial_arc || !dial_label)
+        return;
+
+    lv_arc_set_value(dial_arc, dial_value);
+
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%d", dial_value);
+    lv_label_set_text(dial_label, buf);
+}
+
+// ================= PUBLIC API =================
+
+void volume_page_create(lv_obj_t* parent)
+{
+    // Background
+    lv_obj_set_style_bg_color(parent, DIAL_BG_COLOR, 0);
+
+    // ----- ARC -----
+    dial_arc = lv_arc_create(parent);
+    lv_obj_set_size(dial_arc, 220, 220);
+    lv_obj_center(dial_arc);
+
+    lv_obj_remove_style(dial_arc, nullptr, LV_PART_KNOB);
+    lv_obj_set_style_arc_rounded(dial_arc, false, LV_PART_MAIN);
+    lv_obj_set_style_arc_rounded(dial_arc, false, LV_PART_INDICATOR);
+
+    lv_obj_set_style_arc_width(dial_arc, 24, LV_PART_MAIN);
+    lv_obj_set_style_arc_width(dial_arc, 24, LV_PART_INDICATOR);
+
+    lv_arc_set_bg_start_angle(dial_arc, 145);
+    lv_arc_set_bg_end_angle(dial_arc, 35);
+    lv_arc_set_start_angle(dial_arc, 145);
+    lv_arc_set_end_angle(dial_arc, 35);
+
+    lv_arc_set_range(dial_arc, 0, 100);
+
+    lv_obj_set_style_arc_color(
+        dial_arc,
+        lv_color_hex(0x333333),
+        LV_PART_MAIN
+    );
+
+    dial_apply_color();
+
+    // ----- CENTER LABEL -----
+    dial_label = lv_label_create(parent);
+    lv_obj_center(dial_label);
+    lv_obj_set_style_text_font(dial_label, &lv_font_montserrat_48, 0);
+    lv_obj_set_style_text_color(dial_label, DIAL_FONT_COLOR, 0);
+
+    // ----- FUNCTION LABEL -----
+    dial_function = lv_label_create(parent);
+    lv_obj_set_style_text_font(dial_function, &lv_font_montserrat_20, 0);
+    lv_obj_align(dial_function, LV_ALIGN_BOTTOM_MID, 0, -35);
+    lv_obj_set_style_text_color(dial_function, DIAL_FONT_COLOR, 0);
+
+    // Initial state
+    dial_value = 0;
+    dial_update();
+}
+
+void volume_page_set_absolute(int value)
+{
+    dial_value = value;
+
+    if (dial_value < 0)   dial_value = 0;
+    if (dial_value > 100) dial_value = 100;
+
+    dial_update();
+
+    Serial.printf("[UI] Dial absolute = %d\n", dial_value);
+}
+
+void volume_page_set_delta(int delta)
+{
+    volume_page_set_absolute(dial_value + delta);
+}
+
+int volume_page_get_value()
+{
+    return dial_value;
+}
+
+// ================= NEW SLOT / COLOR API =================
+
+void volume_page_set_slot(DialSlot slot)
+{
+    if (slot >= DIAL_SLOT_COUNT)
+        return;
+
+    active_slot = (DialSlot)slot;
+
+    dial_apply_color();
+
+    Serial.printf("[UI] Active dial slot = %u\n", slot);
+}
+
+void volume_page_set_color(DialSlot slot, uint8_t r, uint8_t g, uint8_t b)
+{
+    if (slot >= DIAL_SLOT_COUNT)
+        return;
+
+    slots[slot].color = lv_color_make(r, g, b);
+
+    if (slot == active_slot)
+        dial_apply_color();
+
+    Serial.printf(
+        "[UI] Slot %u color = #%02X%02X%02X\n",
+        slot, r, g, b
+    );
+}
+
+void volume_page_set_label(const char* text)
+{
+    if (!dial_function)
+        return;
+
+    lv_label_set_text(dial_function, text ? text : "");
+}
+
+void volume_page_on_enter()
+{
+    // Re-assert current slot context
+    DialSlot slot = helix_get_active_slot();
+
+    volume_page_set_slot(slot);
+
+    // Re-assert label (assign name already comes from protocol)
+    volume_page_set_label(
+        helix_get_slot_label(slot)
+    );
+
+    // Re-assert value (absolute, authoritative)
+    int ui = helix_get_slot_ui_value(slot);
+    volume_page_set_absolute(ui);
+}
+
+void volume_page_delta(int delta)
+{
+    helix_volume_delta(delta);
+}
+
+void volume_page_refresh()
+{
+    DialSlot slot = helix_get_active_slot();
+
+    int ui = helix_get_slot_ui_value(slot);
+    const char* label = helix_get_slot_label(slot);
+
+    volume_page_set_label(label);
+    volume_page_set_absolute(ui);
+}

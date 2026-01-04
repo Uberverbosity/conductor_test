@@ -2,7 +2,8 @@
 #include <lvgl.h>
 #include <TFT_eSPI.h>
 
-#include "pages/master_dial.h"
+#include "pages/volume_page.h"
+#include "pages/page_manager.h"
 #include "protocol/helix_protocol.h"
 
 // ================== PINS ==================
@@ -30,17 +31,19 @@ void my_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *color_p)
     lv_display_flush_ready(disp);
 }
 
-// ================== ENCODER (POLLING) ==================
+// ================== ENCODER ==================
 static uint8_t enc_prev = 0;
 static int enc_accum = 0;
 
-// Quadrature decode table
 static const int8_t quad_table[4][4] = {
     {  0, -1, +1,  0 },
     { +1,  0,  0, -1 },
     { -1,  0,  0, +1 },
     {  0, +1, -1,  0 }
 };
+
+static bool btn_prev = true;
+static bool encoder_btn_pressed = false;
 
 static inline void poll_encoder()
 {
@@ -56,28 +59,26 @@ static inline void poll_encoder()
     }
 }
 
-static bool btn_prev = true;   // INPUT_PULLUP = idle HIGH
-
 static inline void poll_encoder_button()
 {
     bool now = digitalRead(PIN_ENC_BTN);
 
-    // Falling edge = button press
     if (btn_prev && !now) {
-        Serial.println("[BTN] Encoder pressed");
-        helix_cycle_slot();   // <-- slot cycling hook
+        encoder_btn_pressed = true;
     }
 
     btn_prev = now;
 }
 
+static bool last_helix_ready = false;
+
 // ================== SETUP ==================
 void setup()
 {
     Serial.begin(115200);
-    delay(200);
+    delay(300);                     // <-- REQUIRED on ESP32
+    Serial.println("[BOOT] setup enter");
 
-    // GPIO
     pinMode(PIN_BL, OUTPUT);
     digitalWrite(PIN_BL, LOW);
 
@@ -85,7 +86,7 @@ void setup()
     pinMode(PIN_ENC_B, INPUT_PULLUP);
     pinMode(PIN_ENC_BTN, INPUT_PULLUP);
 
-    // LVGL
+    // ---- LVGL FIRST ----
     lv_init();
 
     tft.init();
@@ -93,22 +94,21 @@ void setup()
     tft.fillScreen(TFT_BLACK);
 
     lv_display_t* disp = lv_display_create(240, 240);
+    lv_display_set_default(disp);
+    lv_display_set_flush_cb(disp, my_flush_cb);
 
     static uint16_t buf1[240 * 40];
     static uint16_t buf2[240 * 40];
 
     lv_display_set_buffers(
         disp,
-        buf1, buf2,
+        buf1,
+        buf2,
         sizeof(buf1),
         LV_DISPLAY_RENDER_MODE_PARTIAL
     );
-
-    lv_display_set_flush_cb(disp, my_flush_cb);
-
-    master_dial_create(lv_scr_act());
-
-    // DSP UART
+    
+    // ---- UART SECOND ----
     Serial1.begin(
         230400,
         SERIAL_8N1,
@@ -117,48 +117,70 @@ void setup()
     );
 
     delay(300);
-    helix_begin(Serial1);
+    Serial.println("[BOOT] UART up");
 
-    // Initialize encoder state
+    helix_begin(Serial1);
+    Serial.println("[BOOT] helix_begin returned");
+
     enc_prev = (digitalRead(PIN_ENC_A) << 1) | digitalRead(PIN_ENC_B);
 
-    Serial.println("[BOOT] Setup complete");
+    Serial.println("[BOOT] setup complete");
 }
 
 // ================== LOOP ==================
 void loop()
 {
-    // --- Protocol ---
+    static bool ui_initialized  = false;
+
+    // ---- Protocol RX ----
     helix_loop();
 
-    // --- LVGL ---
+    bool now_ready = helix_ready();
+    if (now_ready && !last_helix_ready) {
+        Serial.println("[HELIX] helix_ready transitioned to TRUE");
+    }
+    last_helix_ready = now_ready;
+
+    // ---- UI init once DSP is READY ----
+    if (helix_ready() && !ui_initialized) {
+        Serial.println("[UI] Initializing page manager");
+        page_manager_init(lv_scr_act());
+        helix_ui_bind_complete();
+        ui_initialized = true;
+    }
+
+    // ---- LVGL tick ----
     static uint32_t last = 0;
     uint32_t now = millis();
     lv_tick_inc(now - last);
     last = now;
     lv_timer_handler();
 
-    // --- Encoder Poll (1–2 kHz effective) ---
+    // ---- Encoder ----
     poll_encoder();
     poll_encoder_button();
 
-    // Drain encoder
-    if (enc_accum != 0) {
-        int delta = enc_accum;
-        enc_accum = 0;
+    // Button press
+    if (encoder_btn_pressed) {
+        encoder_btn_pressed = false;
 
-        Serial.printf("[ENC] delta=%d\n", delta);
-        helix_volume_delta(delta);
+        if (ui_initialized) {
+            page_manager_encoder_button();
+        }
     }
 
+    // Rotary delta
+    if (enc_accum != 0 && ui_initialized) {
+        int delta = enc_accum;
+        enc_accum = 0;
+        page_manager_encoder_delta(delta);
+    }
+
+    // Debug console
     if (Serial.available()) {
         char c = Serial.read();
-        if (c == 'h') {
-            helix_force_resync();
-        }
-        if (c == 'r') {
-            ESP.restart();
-        }
+        if (c == 'h') helix_force_resync();
+        if (c == 'r') ESP.restart();
     }
 
     delay(2);

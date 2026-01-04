@@ -1,6 +1,7 @@
 #include "helix_protocol.h"
 #include <Arduino.h>
-#include "pages/master_dial.h"
+#include "pages/volume_page.h"
+#include "pages/page_manager.h"
 
 // ================= CONFIG =================
 
@@ -43,6 +44,7 @@ static uint32_t hs7AckMs = 0;
 uint8_t slot_id = 0;
 static bool slotInitialized = false;
 static bool configReadyPrinted = false;
+static bool ui_bound = false;
 
 // ================= MENU STATES =================
 static bool toneMenuEnabled        = false;
@@ -252,7 +254,7 @@ static void decode_volume_blob(const uint8_t *buf)
         uint8_t g = buf[o + 2];
         uint8_t b = buf[o + 3];
 
-        master_dial_set_color((DialSlot)s, r, g, b);
+        volume_page_set_color((DialSlot)s, r, g, b);
 
         Serial.printf(
             "[VOL%d] assign=%02X steps=%u range=%.1f step=%.2f\n",
@@ -307,7 +309,7 @@ static void decode_volume_snapshot(const uint8_t *buf)
 
         if (s == activeSlot) {
             int ui = map(vm.index, 0, vm.steps, 0, 100);
-            master_dial_set_absolute(ui);
+            volume_page_set_absolute(ui);
         }
     }
 }
@@ -331,24 +333,27 @@ void helix_set_active_slot(uint8_t slot)
         return;
 
     VolumeModel &vm = volume[slot];
-
     if (!vm.valid)
+        return;
+
+    // Prevent re-entrant spam
+    if (activeSlot == slot)
         return;
 
     activeSlot = slot;
 
-    // ---- Update UI context (slot identity) ----
-    master_dial_set_slot((DialSlot)slot);
-
-    master_dial_set_label(
-        slot_label_from_assign(vm.assign)
-    );
-
-    // ---- Update UI value (authoritative snapshot) ----
-    int ui = map(vm.index, 0, vm.steps, 0, 100);
-    master_dial_set_absolute(ui);
-
     Serial.printf("[HELIX] active slot = %u\n", slot);
+
+    // ---- UI updates ONLY if UI not yet bound ----
+    if (!ui_bound) {
+        volume_page_set_slot((DialSlot)slot);
+        volume_page_set_label(
+            slot_label_from_assign(vm.assign)
+        );
+
+        int ui = map(vm.index, 0, vm.steps, 0, 100);
+        volume_page_set_absolute(ui);
+    }
 }
 
 void helix_cycle_slot()
@@ -362,11 +367,41 @@ void helix_cycle_slot()
     helix_set_active_slot(validSlotIdx[idx]);
 }
 
-uint8_t helix_get_active_slot()
+DialSlot helix_get_active_slot()
 {
-    return activeSlot;
+    return DialSlot(activeSlot);
 }
 
+const char* helix_get_slot_label(DialSlot slot)
+{
+    if (slot >= NUM_SLOTS)
+        return "";
+
+    VolumeModel &vm = volume[slot];
+    if (!vm.valid)
+        return "";
+
+    return slot_label_from_assign(vm.assign);
+}
+
+int helix_get_slot_ui_value(DialSlot slot)
+{
+    if (slot >= NUM_SLOTS)
+        return 0;
+
+    VolumeModel &vm = volume[slot];
+    if (!vm.valid)
+        return 0;
+
+    return map(vm.index, 0, vm.steps, 0, 100);
+}
+
+bool helix_slot_valid(uint8_t slot)
+{
+    if (slot >= NUM_SLOTS)
+        return false;
+    return volume[slot].valid;
+}
 
 void helix_force_resync()
 {
@@ -377,6 +412,11 @@ void helix_force_resync()
     ready = false;
 
     resetHandshake();
+}
+
+void helix_ui_bind_complete()
+{
+    ui_bound = true;
 }
 
 // ================= FRAME PROCESSOR =================
@@ -399,7 +439,7 @@ static void processFrame()
                 "[UI] live color slot=%d #%02X%02X%02X\n",
                 slot, r, g, b
             );
-            master_dial_set_color(slot, r, g, b);
+            volume_page_set_color(slot, r, g, b);
         }
         
         return;
@@ -494,7 +534,7 @@ static void processFrame()
 
     case HS_WAIT_TONE:
         if (type == 0xF5 && capBuf[5] == 0x09) {
-            // ---- Tone baseline ----
+
             toneLowDb  = (int8_t)capBuf[7];
             toneHighDb = (int8_t)capBuf[11];
 
@@ -502,14 +542,16 @@ static void processFrame()
             toneHighValid = true;
 
             Serial.printf(
-                "[TONE] baseline low=%+d dB high=%+d dB\n",
+                "[TONE BASELINE] low=%+d dB high=%+d dB\n",
                 toneLowDb,
                 toneHighDb
             );
+
             sendHS(HS7, sizeof(HS7), "HS7");
             hsState = HS_WAIT_FINAL;
         }
         break;
+
 
     case HS_WAIT_FINAL:
         if (type == 0xFB && capBuf[4] == 0x2B) {
@@ -523,6 +565,8 @@ static void processFrame()
                 printToneStates();
                 configReadyPrinted = true;
             }
+
+            page_manager_refresh();   // ← MUST EXIST
 
             hsState = HS_WAIT_FD_CHALLENGE;
             Serial.println("[HELIX] HS7 ACK, READY asserted");
@@ -560,13 +604,26 @@ static void processFrame()
 void helix_begin(HardwareSerial& dspSerial)
 {
     dsp = &dspSerial;
-    resetHandshake();
-    Serial.println("Boot Handshake");
+
+    hsState = HS_IDLE;
+    handshakeLocked = false;
+    handshakeInProgress = false;
+    ready = false;
+
+    static bool hs_started = false;
+
+    if (!hs_started) {
+        hs_started = true;
+        Serial.println("[HELIX] waiting for DSP boot");
+        delay(800);                 // one-time, blocking
+        Serial.println("[HELIX] starting handshake");
+        resetHandshake();
+    }
 }
 
 bool helix_ready()
 {
-    return ready && volume[activeSlot].valid;
+    return ready;
 }
 
 // ================== TONE CAPABILITY ================
@@ -581,8 +638,16 @@ int8_t helix_tone_high_db()    { return toneHighDb; }
 void helix_loop()
 {
     if (!dsp) return;
-
     uint32_t nowUs = micros();
+    
+    static bool hs_started = false;
+
+    if (!hs_started) {
+        hs_started = true;
+        Serial.println("[HELIX] starting handshake");
+        resetHandshake();   // HS0 is sent here, safely
+        return;
+    }
 
     while (dsp->available()) {
         uint8_t b = dsp->read();
@@ -641,6 +706,6 @@ void helix_volume_delta(int8_t clicks)
     dsp->flush();
 
     int ui = map(vm.index, 0, vm.steps, 0, 100);
-    master_dial_set_absolute(ui);
+    volume_page_set_absolute(ui);
 }
 
