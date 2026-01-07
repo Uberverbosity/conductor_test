@@ -87,8 +87,7 @@ void tone_page_on_enter(ToneBand band)
 
 void tone_page_delta(ToneBand band, int delta)
 {
-    Serial.printf("[TONE] band=%d delta=%d\n", band, delta);
-    // DSP command will go here later
+    helix_tone_delta(band, delta);
 }
 
 void tone_page_refresh(void)

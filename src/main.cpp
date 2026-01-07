@@ -169,11 +169,14 @@ void loop()
         }
     }
 
-    // Rotary delta
-    if (enc_accum != 0 && ui_initialized) {
-        int delta = enc_accum;
-        enc_accum = 0;
-        page_manager_encoder_delta(delta);
+    // Rotary delta (1 detent = 4 quadrature steps)
+    if (ui_initialized) {
+        int clicks = enc_accum / 4;
+        enc_accum %= 4;
+
+        if (clicks != 0) {
+            page_manager_encoder_delta(clicks);
+        }
     }
 
     // Debug console
