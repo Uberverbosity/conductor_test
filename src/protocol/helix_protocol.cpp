@@ -1,4 +1,4 @@
-#include "helix_protocol.h"
+#include "protocol/helix_protocol.h"
 #include <Arduino.h>
 #include "pages/volume_page.h"
 #include "pages/page_manager.h"
@@ -318,11 +318,10 @@ static void decode_volume_snapshot(const uint8_t *buf)
 static int slot_from_fa(uint8_t slot_id)
 {
     switch (slot_id) {
-        case 0x90: return DIAL_SLOT_VOL1;
-        // future:
-        // case 0x91: return DIAL_SLOT_VOL2;
-        // case 0x92: return DIAL_SLOT_VOL3;
-        // case 0x93: return DIAL_SLOT_VOL4;
+        case 0x90: return 0;  // VOL1
+        case 0x91: return 1;  // VOL2
+        case 0x92: return 2;  // VOL3
+        case 0x93: return 3;  // VOL4
         default:   return -1;
     }
 }
@@ -428,35 +427,31 @@ static void processFrame()
     // Live color preview (no resync)
     if (type == 0xFA && capBuf[4] == 0x33 && capLen >= 9) {
 
-        uint8_t slot_id = capBuf[5];   // 0x90 = VOL1
+        uint8_t slot_id = capBuf[5];
         uint8_t r = capBuf[6];
         uint8_t g = capBuf[7];
         uint8_t b = capBuf[8];
 
         DialSlot slot = (DialSlot)slot_from_fa(slot_id);
-        if (slot < DIAL_SLOT_COUNT) {
+        if (slot >= 0 && slot < NUM_SLOTS) {
             Serial.printf(
                 "[UI] live color slot=%d #%02X%02X%02X\n",
                 slot, r, g, b
             );
             volume_page_set_color(slot, r, g, b);
         }
-        
         return;
     }
 
-    
     if (type == 0xFD && capBuf[4] == 0x33) {
         uint8_t reason = capBuf[5];
 
         Serial.printf("[HELIX] FD obj=33 reason=%02X\n", reason);
 
-        // --- FD: config change → full resync required ---
         if (reason == 0x02) {
             Serial.println("[HELIX] DSP requests full resync");
-
-            handshakeLocked = false;     // ← force unlock
-            handshakeInProgress = false; // ← allow restart
+            handshakeLocked = false;
+            handshakeInProgress = false;
             resetHandshake();
             return;
         }
@@ -464,25 +459,43 @@ static void processFrame()
 
     printHex("[RX]", capBuf, capLen);
 
-    // --- Always decode config/state ---
+    // ---- Always decode config/state ----
     if (type == 0xAF) {
         Serial.println("[DBG] AF blob received");
         decode_volume_blob(capBuf);
-        // ---- Menu enable flags (proven offsets) ----
+
         toneMenuEnabled        = capBuf[21];
         signalInputMenuEnabled = capBuf[19];
         soundSetupMenuEnabled  = capBuf[18];
         bluetoothMenuEnabled   = capBuf[20];
-        // ---- Tone corner frequencies ----
+
         toneLowHz  = u16le(&capBuf[72]);
         toneHighHz = u16le(&capBuf[82]);
     }
-    
+
     if (type == 0xF9 && capBuf[4] == 0x2A && capBuf[5] == 0x04) {
         decode_volume_snapshot(capBuf);
     }
 
-    // --- Handshake FSM stops permanently after READY ---
+    // ---- RUNTIME TONE UPDATE ----
+    if (type == 0xF5 && capBuf[5] == 0x09) {
+
+        toneLowDb  = (int8_t)capBuf[7];
+        toneHighDb = (int8_t)capBuf[11];
+
+        toneLowValid  = true;
+        toneHighValid = true;
+
+        Serial.printf(
+            "[TONE RX] low=%+d dB high=%+d dB\n",
+            toneLowDb,
+            toneHighDb
+        );
+
+        page_manager_refresh();
+    }
+
+    // ---- Handshake FSM ----
     if (handshakeLocked) {
         return;
     }
@@ -552,11 +565,9 @@ static void processFrame()
         }
         break;
 
-
     case HS_WAIT_FINAL:
         if (type == 0xFB && capBuf[4] == 0x2B) {
             hs7AckMs = millis();
-
             ready = true;
             handshakeInProgress = false;
 
@@ -566,8 +577,7 @@ static void processFrame()
                 configReadyPrinted = true;
             }
 
-            page_manager_refresh();   // ← MUST EXIST
-
+            page_manager_refresh();
             hsState = HS_WAIT_FD_CHALLENGE;
             Serial.println("[HELIX] HS7 ACK, READY asserted");
         }
@@ -585,8 +595,7 @@ static void processFrame()
             break;
         }
 
-        // No FD challenge → assume ownership
-        if (millis() - hs7AckMs > 100) {   // 50–100 ms is plenty
+        if (millis() - hs7AckMs > 100) {
             handshakeLocked = true;
             handshakeInProgress = false;
             hsState = HS_READY;
@@ -594,9 +603,10 @@ static void processFrame()
         }
         break;
 
-        default:
+    default:
         break;
     }
+    
 }
 
 // ================= PUBLIC API =================
@@ -633,6 +643,66 @@ bool helix_tone_high_valid()   { return toneHighValid; }
 int8_t helix_tone_low_db()     { return toneLowDb; }
 int8_t helix_tone_high_db()    { return toneHighDb; }
 
+void helix_tone_set(ToneBand band, int8_t db)
+{
+    if (!ready)
+        return;
+
+    uint8_t band_id = (band == TONE_LOW) ? 0x00 : 0x01;
+    uint16_t freq   = (band == TONE_LOW) ? toneLowHz : toneHighHz;
+
+    const uint8_t wake[] = { 0x42, 0x08 };
+    dsp->write(wake, sizeof(wake));
+    dsp->flush();
+    delayMicroseconds(FRAME_DELAY_US);
+
+    uint8_t pkt[] = {
+        0xF7,
+        0x01,
+        0x2B,
+        0x09,
+        band_id,
+        (uint8_t)db,
+        (uint8_t)(freq >> 8),
+        (uint8_t)(freq & 0xFF),
+        0x01,
+        0x00   // checksum
+    };
+
+    // OEM fixed-base checksum
+    uint8_t base = (band == TONE_LOW) ? 0x62 : 0x0D;
+    pkt[9] = base + pkt[5];
+
+    printHex("[TX TONE]", pkt, sizeof(pkt));
+    dsp->write(pkt, sizeof(pkt));
+    dsp->flush();
+}
+
+void helix_tone_delta(ToneBand band, int delta)
+{
+    if (!ready)
+        return;
+
+    int8_t current =
+        (band == TONE_LOW) ? toneLowDb : toneHighDb;
+
+    int8_t target = current + delta;
+
+    if (target < -12) target = -12;
+    if (target >  12) target =  12;
+    if (target == current)
+        return;
+
+    helix_tone_set(band, target);
+
+    if (band == TONE_LOW)
+        toneLowDb = target;
+    else
+        toneHighDb = target;
+
+    page_manager_refresh();
+}
+
 // ================= LOOP =================
 
 void helix_loop()
@@ -640,15 +710,6 @@ void helix_loop()
     if (!dsp) return;
     uint32_t nowUs = micros();
     
-    static bool hs_started = false;
-
-    if (!hs_started) {
-        hs_started = true;
-        Serial.println("[HELIX] starting handshake");
-        resetHandshake();   // HS0 is sent here, safely
-        return;
-    }
-
     while (dsp->available()) {
         uint8_t b = dsp->read();
 
@@ -670,6 +731,7 @@ void helix_loop()
 
 void helix_volume_delta(int8_t clicks)
 {
+    Serial.println("[DBG] helix_volume_delta CALLED");
     if (!ready)
         return;
 
@@ -701,7 +763,6 @@ void helix_volume_delta(int8_t clicks)
         volCode
     };
 
-    //temp
     printHex("[TX VOL]", body, sizeof(body));
     dsp->write(body, sizeof(body));
     dsp->flush();

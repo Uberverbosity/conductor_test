@@ -1,10 +1,22 @@
 #include "tone_page.h"
 #include "protocol/helix_protocol.h"
+#include <lvgl.h>
 #include <cstdio>
+
+// ================= GEOMETRY =================
+
+// Match volume_page exactly
+#define ARC_LEFT       145
+#define ARC_RIGHT       35
+#define ARC_SPAN       ((360 - ARC_LEFT) + ARC_RIGHT)   // 250°
+#define ARC_CENTER     ((ARC_LEFT + ARC_SPAN / 2) % 360) // 270° (12 o'clock)
+
+#define UNITY_TICK_DEG  6   // small mark at 0 dB
 
 // ================= INTERNAL UI OBJECTS =================
 
 struct TonePageCtx {
+    lv_obj_t* arc;
     lv_obj_t* label_center;
     lv_obj_t* label_bottom;
 };
@@ -32,9 +44,41 @@ static void tone_page_set_db_internal(void)
         return;
     }
 
+    // ----- CENTER LABEL -----
     char buf[8];
     snprintf(buf, sizeof(buf), "%+d", db);
     lv_label_set_text(ctx.label_center, buf);
+
+    // ----- ARC CALCULATION -----
+    int start, end;
+
+    constexpr int NEG_SPAN = ARC_CENTER - ARC_LEFT;          // 125°
+    constexpr int POS_SPAN = (360 - ARC_CENTER) + ARC_RIGHT; // 125°
+
+    if (db == 0) {
+        start = ARC_CENTER - UNITY_TICK_DEG / 2;
+        end   = ARC_CENTER + UNITY_TICK_DEG / 2;
+    }
+    else if (db > 0) {
+        float t = db / 12.0f;          // 0 → 1
+        int grow = (int)(t * POS_SPAN);
+
+        start = ARC_CENTER;
+        end   = ARC_CENTER + grow;
+        if (end >= 360) end -= 360;
+    }
+    else {
+        float t = (-db) / 12.0f;       // 0 → 1
+        int grow = (int)(t * NEG_SPAN);
+
+        start = ARC_CENTER - grow;
+        if (start < 0) start += 360;
+        end = ARC_CENTER;
+    }
+
+    lv_arc_set_start_angle(ctx.arc, start);
+    lv_arc_set_end_angle(ctx.arc, end);
+
 }
 
 // ================= PUBLIC API =================
@@ -43,7 +87,36 @@ void tone_page_create(lv_obj_t* parent, ToneBand band)
 {
     s_band = band;
 
-    // ----- CENTER LABEL (MATCH VOLUME PAGE) -----
+    // ----- ARC (MATCHES VOLUME PAGE) -----
+    ctx.arc = lv_arc_create(parent);
+    lv_obj_set_size(ctx.arc, 220, 220);
+    lv_obj_center(ctx.arc);
+
+    lv_obj_remove_style(ctx.arc, nullptr, LV_PART_KNOB);
+    lv_obj_set_style_arc_rounded(ctx.arc, false, LV_PART_MAIN);
+    lv_obj_set_style_arc_rounded(ctx.arc, false, LV_PART_INDICATOR);
+
+    lv_obj_set_style_arc_width(ctx.arc, 24, LV_PART_MAIN);
+    lv_obj_set_style_arc_width(ctx.arc, 24, LV_PART_INDICATOR);
+
+    lv_arc_set_bg_start_angle(ctx.arc, ARC_LEFT);
+    lv_arc_set_bg_end_angle(ctx.arc, ARC_RIGHT);
+    lv_arc_set_start_angle(ctx.arc, ARC_LEFT);
+    lv_arc_set_end_angle(ctx.arc, ARC_RIGHT);
+
+    lv_obj_set_style_arc_color(
+        ctx.arc,
+        lv_color_hex(0x333333),
+        LV_PART_MAIN
+    );
+
+    lv_obj_set_style_arc_color(
+        ctx.arc,
+        lv_color_hex(0xFFFFFF),
+        LV_PART_INDICATOR
+    );
+
+    // ----- CENTER LABEL -----
     ctx.label_center = lv_label_create(parent);
     lv_obj_center(ctx.label_center);
     lv_obj_set_style_text_font(
@@ -57,7 +130,7 @@ void tone_page_create(lv_obj_t* parent, ToneBand band)
         0
     );
 
-    // ----- BOTTOM LABEL (MATCH dial_function EXACTLY) -----
+    // ----- BOTTOM LABEL -----
     ctx.label_bottom = lv_label_create(parent);
     lv_obj_set_style_text_font(
         ctx.label_bottom,

@@ -169,16 +169,17 @@ void loop()
         }
     }
 
-    // Rotary delta (1 detent = 4 quadrature steps)
+    // Rotary delta (edge-based, stabilized)
     if (ui_initialized) {
-        int clicks = enc_accum / 4;
-        enc_accum %= 4;
-
-        if (clicks != 0) {
-            page_manager_encoder_delta(clicks);
+        if (enc_accum >= 2) {
+            enc_accum -= 2;
+            page_manager_encoder_delta(+1);
+        }
+        else if (enc_accum <= -2) {
+            enc_accum += 2;
+            page_manager_encoder_delta(-1);
         }
     }
-
     // Debug console
     if (Serial.available()) {
         char c = Serial.read();
