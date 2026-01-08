@@ -24,6 +24,14 @@ struct TonePageCtx {
 static TonePageCtx ctx;
 static ToneBand s_band;
 
+// ================= ARC COLORS =====================
+static lv_color_t tone_arc_color(ToneBand band)
+{
+    return (band == TONE_LOW)
+        ? lv_color_hex(0x7B3FE4)   // Purple
+        : lv_color_hex(0xFF8C1A);  // Orange
+}
+
 // ================= INTERNAL HELPERS =================
 
 static void tone_page_set_db_internal(void)
@@ -87,7 +95,7 @@ void tone_page_create(lv_obj_t* parent, ToneBand band)
 {
     s_band = band;
 
-    // ----- ARC (MATCHES VOLUME PAGE) -----
+    // ----- ARC -----
     ctx.arc = lv_arc_create(parent);
     lv_obj_set_size(ctx.arc, 220, 220);
     lv_obj_center(ctx.arc);
@@ -112,7 +120,7 @@ void tone_page_create(lv_obj_t* parent, ToneBand band)
 
     lv_obj_set_style_arc_color(
         ctx.arc,
-        lv_color_hex(0xFFFFFF),
+        tone_arc_color(band),
         LV_PART_INDICATOR
     );
 

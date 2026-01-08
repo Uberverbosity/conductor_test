@@ -5,6 +5,7 @@
 #include "pages/volume_page.h"
 #include "pages/page_manager.h"
 #include "protocol/helix_protocol.h"
+#include "fonts/lv_font_montserrat_72.h"
 
 // ================== PINS ==================
 #define PIN_BL      8
@@ -43,7 +44,44 @@ static const int8_t quad_table[4][4] = {
 };
 
 static bool btn_prev = true;
-static bool encoder_btn_pressed = false;
+
+static bool btn_down = false;
+static uint32_t btn_down_ms = 0;
+static const uint32_t LONG_PRESS_MS = 600;
+
+static bool long_press_fired = false;
+
+static inline void poll_encoder_button()
+{
+    bool now = digitalRead(PIN_ENC_BTN);
+
+    // Button down
+    if (!now && btn_prev) {
+        btn_down = true;
+        btn_down_ms = millis();
+        long_press_fired = false;
+    }
+
+    // Button held
+    if (!now && btn_down && !long_press_fired) {
+        if (millis() - btn_down_ms >= LONG_PRESS_MS) {
+            long_press_fired = true;
+            page_manager_encoder_long_press();
+        }
+    }
+
+    // Button released
+    if (now && !btn_prev && btn_down) {
+        btn_down = false;
+
+        if (!long_press_fired) {
+            // short press
+            page_manager_encoder_button();
+        }
+    }
+
+    btn_prev = now;
+}
 
 static inline void poll_encoder()
 {
@@ -57,17 +95,6 @@ static inline void poll_encoder()
     if (delta != 0) {
         enc_accum += delta;
     }
-}
-
-static inline void poll_encoder_button()
-{
-    bool now = digitalRead(PIN_ENC_BTN);
-
-    if (btn_prev && !now) {
-        encoder_btn_pressed = true;
-    }
-
-    btn_prev = now;
 }
 
 static bool last_helix_ready = false;
@@ -159,15 +186,6 @@ void loop()
     // ---- Encoder ----
     poll_encoder();
     poll_encoder_button();
-
-    // Button press
-    if (encoder_btn_pressed) {
-        encoder_btn_pressed = false;
-
-        if (ui_initialized) {
-            page_manager_encoder_button();
-        }
-    }
 
     // Rotary delta (edge-based, stabilized)
     if (ui_initialized) {

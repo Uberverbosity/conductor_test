@@ -42,3 +42,7 @@ int8_t helix_tone_high_db();
 void helix_tone_set(ToneBand band, int8_t db);
 void helix_tone_delta(ToneBand band, int delta);
 void helix_tone_request(ToneBand band, int8_t target_db);
+
+// ---- Select Preset ----
+bool helix_select_preset(uint8_t idx);
+uint8_t helix_get_current_preset();

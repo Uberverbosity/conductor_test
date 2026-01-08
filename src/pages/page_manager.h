@@ -8,6 +8,7 @@ enum PageId {
     PAGE_VOL_3,
     PAGE_TONE_LOW,
     PAGE_TONE_HIGH,
+    PAGE_PRESET,
     PAGE_COUNT
 };
 
@@ -17,3 +18,4 @@ void page_manager_prev();
 void page_manager_refresh();
 void page_manager_encoder_delta(int delta);
 void page_manager_encoder_button();
+void page_manager_encoder_long_press();

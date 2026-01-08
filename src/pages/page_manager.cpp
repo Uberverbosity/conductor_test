@@ -2,6 +2,7 @@
 #include "pages/volume_page.h"
 #include "pages/tone_page.h"
 #include "protocol/helix_protocol.h"
+#include "pages/preset_page.h"
 
 static lv_obj_t* root_obj;
 static PageId current_page;
@@ -19,6 +20,9 @@ static bool page_available(PageId p)
         case PAGE_TONE_LOW:
         case PAGE_TONE_HIGH:
             return helix_tone_enabled();
+
+        case PAGE_PRESET:
+            return true;
 
         default:
             return false;
@@ -57,6 +61,10 @@ static void create_page(PageId p)
         case PAGE_TONE_HIGH:
             tone_page_create(root_obj, TONE_HIGH);
             break;
+
+        case PAGE_PRESET:
+            preset_page_create(root_obj);
+            break;
     }
 }
 
@@ -87,6 +95,9 @@ static void enter_page(PageId p)
         case PAGE_TONE_HIGH:
             tone_page_on_enter(TONE_HIGH);
             break;
+        case PAGE_PRESET:
+            preset_page_on_enter();
+            break;            
     }
 }
 
@@ -127,31 +138,54 @@ void page_manager_refresh()
         case PAGE_TONE_HIGH:
             tone_page_refresh();
             break;
-    }
+        case PAGE_PRESET:
+            preset_page_refresh();
+            break;    
+        }
 }
 
 void page_manager_encoder_delta(int delta)
 {
     switch (current_page) {
+
         case PAGE_VOL_0:
         case PAGE_VOL_1:
         case PAGE_VOL_2:
         case PAGE_VOL_3:
             volume_page_delta(delta);
+            page_manager_refresh();
             break;
 
         case PAGE_TONE_LOW:
             tone_page_delta(TONE_LOW, delta);
+            page_manager_refresh();
             break;
 
         case PAGE_TONE_HIGH:
             tone_page_delta(TONE_HIGH, delta);
+            page_manager_refresh();
+            break;
+
+        case PAGE_PRESET:
+            preset_page_delta(delta);
             break;
     }
-    page_manager_refresh();
 }
 
 void page_manager_encoder_button()
 {
     page_manager_next();
 }
+
+void page_manager_encoder_long_press()
+{
+    switch (current_page) {
+        case PAGE_PRESET:
+            preset_page_select();
+            break;
+
+        default:
+            break;
+    }
+}
+

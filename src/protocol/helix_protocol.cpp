@@ -2,6 +2,7 @@
 #include <Arduino.h>
 #include "pages/volume_page.h"
 #include "pages/page_manager.h"
+#include "pages/preset_page.h"
 
 // ================= CONFIG =================
 
@@ -19,6 +20,8 @@ static HardwareSerial* dsp = nullptr;
 // ================= DSP LIVENESS =================
 
 static uint32_t lastDspRxMs = 0;
+static uint32_t hsStartMs = 0;
+static bool warnedNoRx = false;
 
 // ================= HANDSHAKE STATE =================
 
@@ -60,6 +63,9 @@ static int8_t   toneLowDb     = 0;
 static int8_t   toneHighDb    = 0;
 static uint16_t toneLowHz     = 0;
 static uint16_t toneHighHz    = 0;
+
+// ================= PRESET STATE =================
+static uint8_t currentPreset = 0;
 
 // ================= HANDSHAKE PACKETS =================
 
@@ -197,6 +203,10 @@ static void printToneStates()
 static void resetHandshake()
 {
     Serial.println("[HELIX] handshake reset");
+    
+    warnedNoRx = false;
+    lastDspRxMs = 0;
+    hsStartMs = millis();
 
     ready = false;
     handshakeLocked = false;
@@ -418,6 +428,11 @@ void helix_ui_bind_complete()
     ui_bound = true;
 }
 
+uint8_t helix_get_current_preset()
+{
+    return currentPreset;
+}
+
 // ================= FRAME PROCESSOR =================
 
 static void processFrame()
@@ -493,6 +508,23 @@ static void processFrame()
         );
 
         page_manager_refresh();
+    }
+
+    // ---- ACK OF PRESET CHANGE ----
+    if (type == 0xFB &&
+        capBuf[4] == 0x2B &&
+        capBuf[5] == 0x06)
+    {
+        uint8_t idx = capBuf[6];
+        preset_page_on_ack(idx);
+    }
+    
+    // ---- GET CURRENT PRESET ----
+    if (type == 0xF2 &&
+        capBuf[4] == 0x2A &&
+        capBuf[5] == 0x06)
+    {
+        currentPreset = capBuf[6];
     }
 
     // ---- Handshake FSM ----
@@ -703,6 +735,28 @@ void helix_tone_delta(ToneBand band, int delta)
     page_manager_refresh();
 }
 
+// ================= PRESET SELECT ==============
+bool helix_select_preset(uint8_t idx)
+{
+    if (!ready || !dsp || idx > 7)
+        return false;
+
+    uint8_t pkt[9] = {
+        0x42, 0x05,
+        0xFA, 0x01,
+        0x2B, 0x06,
+        idx,
+        0x01,
+        (uint8_t)(0x32 + idx)   // ← checksum, final byte
+    };
+
+    printHex("[TX PRESET]", pkt, sizeof(pkt));
+    dsp->write(pkt, sizeof(pkt));
+    dsp->flush();
+
+    return true;
+}
+
 // ================= LOOP =================
 
 void helix_loop()
@@ -724,6 +778,17 @@ void helix_loop()
     if (capLen && (nowUs - lastByteUs) > GAP_US) {
         processFrame();
         capLen = 0;
+    }
+
+    if (!ready && handshakeInProgress && !warnedNoRx) {
+        if (millis() - hsStartMs > 1000 &&
+            (lastDspRxMs == 0 || millis() - lastDspRxMs > 1000))
+        {
+            Serial.println(
+                "[WARN] No DSP RX after HS0.  Is the ESP connected?  Is OEM conductor still attached?"
+            );
+            warnedNoRx = true;
+        }
     }
 }
 
