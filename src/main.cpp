@@ -5,7 +5,6 @@
 #include "pages/volume_page.h"
 #include "pages/page_manager.h"
 #include "protocol/helix_protocol.h"
-#include "fonts/lv_font_montserrat_72.h"
 
 // ================== PINS ==================
 #define PIN_BL      8

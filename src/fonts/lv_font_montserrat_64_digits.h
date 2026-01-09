@@ -5,7 +5,7 @@
 extern "C" {
 #endif
 
-extern const lv_font_t lv_font_montserrat_72;
+extern const lv_font_t lv_font_montserrat_64_digits;
 
 #ifdef __cplusplus
 }

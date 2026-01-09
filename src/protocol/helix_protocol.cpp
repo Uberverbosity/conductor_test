@@ -3,6 +3,7 @@
 #include "pages/volume_page.h"
 #include "pages/page_manager.h"
 #include "pages/preset_page.h"
+#include "fonts/lv_font_montserrat_64_digits.h"
 
 // ================= CONFIG =================
 

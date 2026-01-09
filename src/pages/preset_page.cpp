@@ -3,12 +3,13 @@
 #include <lvgl.h>
 #include <cstdio>
 #include "protocol/helix_protocol.h"
-//#include "fonts/lv_font_montserrat_72.h"
+#include "fonts/lv_font_montserrat_64_digits.h"
 
 // ================= INTERNAL UI OBJECTS =================
 
 static lv_obj_t* dial_label_center = nullptr;
 static lv_obj_t* dial_label_bottom = nullptr;
+static lv_obj_t* preset_page_root = nullptr;
 
 // ================= STYLING =================
 
@@ -40,15 +41,31 @@ static void update_center_label(uint8_t idx, lv_color_t color)
 
 static void flash_selected_preset(void)
 {
-    // Dark flash → white, non-blocking
-    update_center_label(current_preset, COLOR_FLASH);
+    if (!preset_page_root)
+        return;
+
+    // Flash background to white
+    lv_obj_set_style_bg_color(
+        preset_page_root,
+        lv_color_hex(0xDDDDDD),
+        0
+    );
+
+    // Restore background after 150 ms
     lv_timer_t* t = lv_timer_create(
         [](lv_timer_t*) {
-            update_center_label(current_preset, COLOR_ACTIVE);
+            if (!preset_page_root) return;
+
+            lv_obj_set_style_bg_color(
+                preset_page_root,
+                BG_COLOR,
+                0
+            );
         },
-        200,
+        150,
         nullptr
     );
+
     lv_timer_set_repeat_count(t, 1);
 }
 
@@ -56,28 +73,31 @@ static void flash_selected_preset(void)
 
 void preset_page_create(lv_obj_t* parent)
 {
-    // Background
+    preset_page_root = parent;
+
     lv_obj_set_style_bg_color(parent, BG_COLOR, 0);
+    lv_obj_set_style_bg_opa(parent, LV_OPA_COVER, 0);
 
     // ----- CENTER LABEL -----
     dial_label_center = lv_label_create(parent);
- 
-    lv_obj_set_size(dial_label_center, 240, 100);
-    lv_label_set_long_mode(dial_label_center, LV_LABEL_LONG_CLIP);
 
-    lv_obj_center(dial_label_center);
     lv_obj_set_style_text_font(
         dial_label_center,
-        &lv_font_montserrat_48,
+        &lv_font_montserrat_64_digits,
         0
     );
-    lv_obj_set_style_text_align(dial_label_center, LV_TEXT_ALIGN_CENTER, 0);
-    //lv_obj_set_style_transform_zoom(dial_label_center, 333, 0); // ~1.30×
+
     lv_obj_set_style_text_color(
         dial_label_center,
         COLOR_ACTIVE,
         0
     );
+
+    lv_label_set_long_mode(dial_label_center, LV_LABEL_LONG_WRAP);
+    lv_label_set_text(dial_label_center, "8");
+
+    lv_obj_refr_size(dial_label_center);
+    lv_obj_center(dial_label_center);
 
     // ----- BOTTOM LABEL -----
     dial_label_bottom = lv_label_create(parent);
@@ -91,15 +111,14 @@ void preset_page_create(lv_obj_t* parent)
         COLOR_ACTIVE,
         0
     );
-    lv_obj_align(dial_label_bottom, LV_ALIGN_BOTTOM_MID, 0, -35);
     lv_label_set_text(dial_label_bottom, "Preset Select");
-
-    // Initial display
-    update_center_label(current_preset, COLOR_ACTIVE);
+    lv_obj_align(dial_label_bottom, LV_ALIGN_BOTTOM_MID, 0, -35);
 }
 
 void preset_page_on_enter(void)
 {
+    lv_obj_invalidate(lv_scr_act());
+
     current_preset = helix_get_current_preset();
     pending_preset = current_preset;
     has_pending    = false;
