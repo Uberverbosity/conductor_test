@@ -12,4 +12,6 @@ void preset_page_delta(int delta);      // dial rotation
 void preset_page_select(void);           // long-press
 
 // Protocol callback (FB 2B 06 ACK)
-void preset_page_on_ack(uint8_t idx);
+void preset_page_on_ack(uint8_t idx, uint8_t status);
+
+static void flash_no_config(void);

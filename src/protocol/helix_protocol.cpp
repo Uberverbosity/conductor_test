@@ -3,7 +3,7 @@
 #include "pages/volume_page.h"
 #include "pages/page_manager.h"
 #include "pages/preset_page.h"
-#include "fonts/lv_font_montserrat_64_digits.h"
+//#include "fonts/lv_font_montserrat_64.h"
 
 // ================= CONFIG =================
 
@@ -516,10 +516,12 @@ static void processFrame()
         capBuf[4] == 0x2B &&
         capBuf[5] == 0x06)
     {
-        uint8_t idx = capBuf[6];
-        preset_page_on_ack(idx);
+        uint8_t idx    = capBuf[6];
+        uint8_t status = capBuf[7];   // 01 = OK, 00 = No Config
+
+        preset_page_on_ack(idx, status);
     }
-    
+   
     // ---- GET CURRENT PRESET ----
     if (type == 0xF2 &&
         capBuf[4] == 0x2A &&
@@ -739,7 +741,7 @@ void helix_tone_delta(ToneBand band, int delta)
 // ================= PRESET SELECT ==============
 bool helix_select_preset(uint8_t idx)
 {
-    if (!ready || !dsp || idx > 7)
+    if (!ready || !dsp || idx > 9)
         return false;
 
     uint8_t pkt[9] = {

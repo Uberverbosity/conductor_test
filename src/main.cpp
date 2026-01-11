@@ -46,7 +46,7 @@ static bool btn_prev = true;
 
 static bool btn_down = false;
 static uint32_t btn_down_ms = 0;
-static const uint32_t LONG_PRESS_MS = 600;
+static const uint32_t LONG_PRESS_MS = 400;
 
 static bool long_press_fired = false;
 
