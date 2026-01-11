@@ -21,8 +21,10 @@ static HardwareSerial* dsp = nullptr;
 // ================= DSP LIVENESS =================
 
 static uint32_t lastDspRxMs = 0;
+static uint32_t lastRetryMs = 0;
 static uint32_t hsStartMs = 0;
 static bool warnedNoRx = false;
+static uint32_t lastRenegotiateMs = 0;
 
 // ================= HANDSHAKE STATE =================
 
@@ -40,6 +42,13 @@ enum HelixHS {
     HS_READY
 };
 
+enum OwnershipState {
+    OWNER_NONE,
+    OWNER_NEGOTIATING,
+    OWNER_LATCHED
+};
+
+static OwnershipState ownerState = OWNER_NONE;
 static HelixHS hsState = HS_IDLE;
 static bool ready = false;
 static bool handshakeLocked = false;
@@ -49,6 +58,7 @@ uint8_t slot_id = 0;
 static bool slotInitialized = false;
 static bool configReadyPrinted = false;
 static bool ui_bound = false;
+static bool dspOnline = false;
 
 // ================= MENU STATES =================
 static bool toneMenuEnabled        = false;
@@ -205,6 +215,7 @@ static void resetHandshake()
 {
     Serial.println("[HELIX] handshake reset");
     
+    dspOnline = false;
     warnedNoRx = false;
     lastDspRxMs = 0;
     hsStartMs = millis();
@@ -440,6 +451,12 @@ static void processFrame()
 {
     uint8_t type = capBuf[2];
 
+    // Any non-FD frame implies DSP is alive
+    if (type != 0xFD) {
+        dspOnline = true;
+        lastDspRxMs = millis();
+    }
+
     // Live color preview (no resync)
     if (type == 0xFA && capBuf[4] == 0x33 && capLen >= 9) {
 
@@ -462,15 +479,37 @@ static void processFrame()
     if (type == 0xFD && capBuf[4] == 0x33) {
         uint8_t reason = capBuf[5];
 
-        Serial.printf("[HELIX] FD obj=33 reason=%02X\n", reason);
+        if (!(ownerState == OWNER_LATCHED && reason == 0x00)) {
+            Serial.printf("[HELIX] FD obj=33 reason=%02X\n", reason);
+        }
 
-        if (reason == 0x02) {
-            Serial.println("[HELIX] DSP requests full resync");
-            handshakeLocked = false;
+        if (reason == 0x02 &&
+            millis() - lastRenegotiateMs > 200)
+        {
+            lastRenegotiateMs = millis();
+
+            Serial.println("[HELIX] FD ownership revoked → renegotiate");
+
+            // Drop ownership unconditionally
+            ownerState          = OWNER_NONE;
+            handshakeLocked     = false;
             handshakeInProgress = false;
-            resetHandshake();
+
+            // If we were not READY yet, do a full reset
+            if (!ready) {
+                Serial.println("[HELIX] FD before READY → hard reset");
+                resetHandshake();
+                return;
+            }
+
+            // READY already asserted → renegotiate ownership only
+            sendHS(HS7, sizeof(HS7), "HS7 (renegotiate)");
+            hs7AckMs = millis();
+            hsState  = HS_WAIT_FD_CHALLENGE;
             return;
         }
+
+        // reason == 0x00 → challenge / keepalive
     }
 
     printHex("[RX]", capBuf, capLen);
@@ -619,27 +658,36 @@ static void processFrame()
         break;
 
     case HS_WAIT_FD_CHALLENGE:
+
         if (type == 0xFD && capBuf[4] == 0x33) {
             dsp->write(HS_FD_REPLY, sizeof(HS_FD_REPLY));
             dsp->flush();
+
             Serial.println("[HELIX] FD challenge answered");
-            handshakeLocked = true;
+
+            ownerState          = OWNER_LATCHED;
+            handshakeLocked     = true;
             handshakeInProgress = false;
+
             hsState = HS_READY;
             Serial.println("[HELIX] READY (ownership latched)");
             break;
         }
 
-        if (millis() - hs7AckMs > 100) {
-            handshakeLocked = true;
+        // Timeout ONLY allowed on cold boot
+        if (ownerState == OWNER_NONE &&
+            millis() - hs7AckMs > 100)
+        {
+            ownerState          = OWNER_LATCHED;
+            handshakeLocked     = true;
             handshakeInProgress = false;
+
             hsState = HS_READY;
             Serial.println("[HELIX] READY (no FD challenge)");
         }
+
         break;
 
-    default:
-        break;
     }
     
 }
@@ -770,8 +818,6 @@ void helix_loop()
     while (dsp->available()) {
         uint8_t b = dsp->read();
 
-        lastDspRxMs = millis();
-
         if (capLen < FRAME_MAX)
             capBuf[capLen++] = b;
 
@@ -792,6 +838,26 @@ void helix_loop()
             );
             warnedNoRx = true;
         }
+    }
+
+    if (handshakeInProgress &&
+        millis() - hsStartMs > 1500 &&
+        !dspOnline)
+    {
+        Serial.println("[HELIX] DSP appears offline, backing off handshake");
+
+        handshakeInProgress = false;
+        handshakeLocked = true;
+        hsState = HS_IDLE;
+    }
+
+    if (!ready &&
+        !dspOnline &&
+        millis() - lastRetryMs > 3000)
+    {
+        Serial.println("[HELIX] retrying DSP handshake");
+        resetHandshake();
+        lastRetryMs = millis();
     }
 }
 
