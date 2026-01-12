@@ -170,11 +170,13 @@ void page_manager_encoder_delta(int delta)
             preset_page_delta(delta);
             break;
     }
+    helix_note_user_interaction();
 }
 
 void page_manager_encoder_button()
 {
     page_manager_next();
+    helix_note_user_interaction();
 }
 
 void page_manager_encoder_long_press()
@@ -187,5 +189,5 @@ void page_manager_encoder_long_press()
         default:
             break;
     }
+    helix_note_user_interaction();
 }
-

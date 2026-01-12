@@ -1,8 +1,10 @@
 #include "protocol/helix_protocol.h"
 #include <Arduino.h>
+#include "lvgl.h"
 #include "pages/volume_page.h"
 #include "pages/page_manager.h"
 #include "pages/preset_page.h"
+
 //#include "fonts/lv_font_montserrat_64.h"
 
 // ================= CONFIG =================
@@ -25,6 +27,7 @@ static uint32_t lastRetryMs = 0;
 static uint32_t hsStartMs = 0;
 static bool warnedNoRx = false;
 static uint32_t lastRenegotiateMs = 0;
+static uint32_t lastUserInteractionMs = 0;
 
 // ================= HANDSHAKE STATE =================
 
@@ -59,6 +62,8 @@ static bool slotInitialized = false;
 static bool configReadyPrinted = false;
 static bool ui_bound = false;
 static bool dspOnline = false;
+static bool forceMasterAfterHandshake = false;
+static bool rehandshakeFromFD = false;
 
 // ================= MENU STATES =================
 static bool toneMenuEnabled        = false;
@@ -66,6 +71,7 @@ static bool signalInputMenuEnabled = false;
 static bool soundSetupMenuEnabled  = false;
 static bool bluetoothMenuEnabled   = false;
 static bool menuFlagsPrinted = false;
+static bool autoReturnEnabled = false;
 
 // ================= TONE STATES =================
 static bool     toneLowValid  = false;
@@ -139,6 +145,11 @@ static void printHex(const char* tag, const uint8_t* buf, size_t len)
     Serial.println();
 }
 
+void helix_note_user_interaction()
+{
+    lastUserInteractionMs = millis();
+}
+
 static void sendHS(const uint8_t* pkt, size_t len, const char* label)
 {
     printHex("[TX HS]", pkt, len);
@@ -175,7 +186,9 @@ static void printMenuStates()
     Serial.print("Bluetooth: ");
     Serial.println(bluetoothMenuEnabled ? "Enabled" : "Disabled");
 
-    //Serial.println("========================\n");
+    Serial.print("Auto Return After 5 Seconds: ");
+    Serial.println(autoReturnEnabled ? "Enabled" : "Disabled");
+
 }
 
 static void printToneStates()
@@ -286,6 +299,7 @@ static void decode_volume_blob(const uint8_t *buf)
             vm.range_dB,
             vm.step_dB
         );
+
     }
 
     // ---- REBUILD VALID SLOT LIST ----
@@ -301,6 +315,8 @@ static void decode_volume_blob(const uint8_t *buf)
         helix_set_active_slot(validSlotIdx[0]);
         slotInitialized = true;
     }
+
+    page_manager_refresh();
 
 }
 
@@ -365,16 +381,14 @@ void helix_set_active_slot(uint8_t slot)
 
     Serial.printf("[HELIX] active slot = %u\n", slot);
 
-    // ---- UI updates ONLY if UI not yet bound ----
-    if (!ui_bound) {
-        volume_page_set_slot((DialSlot)slot);
-        volume_page_set_label(
-            slot_label_from_assign(vm.assign)
-        );
+    // ---- ALWAYS update slot context ----
+    volume_page_set_slot((DialSlot)slot);
+    volume_page_set_label(
+        slot_label_from_assign(vm.assign)
+    );
 
-        int ui = map(vm.index, 0, vm.steps, 0, 100);
-        volume_page_set_absolute(ui);
-    }
+    int ui = map(vm.index, 0, vm.steps, 0, 100);
+    volume_page_set_absolute(ui);
 }
 
 void helix_cycle_slot()
@@ -438,6 +452,14 @@ void helix_force_resync()
 void helix_ui_bind_complete()
 {
     ui_bound = true;
+
+    if (rehandshakeFromFD) {
+        Serial.println("[UI] Reinitializing page manager after re-handshake");
+
+        page_manager_init(lv_scr_act());
+
+        rehandshakeFromFD = false;
+    }
 }
 
 uint8_t helix_get_current_preset()
@@ -479,38 +501,20 @@ static void processFrame()
     if (type == 0xFD && capBuf[4] == 0x33) {
         uint8_t reason = capBuf[5];
 
-        if (!(ownerState == OWNER_LATCHED && reason == 0x00)) {
-            Serial.printf("[HELIX] FD obj=33 reason=%02X\n", reason);
-        }
+        Serial.printf("[HELIX] FD obj=33 reason=%02X\n", reason);
 
-        if (reason == 0x02 &&
-            millis() - lastRenegotiateMs > 200)
-        {
-            lastRenegotiateMs = millis();
+        if (reason == 0x02) {
+            Serial.println("[HELIX] FD config change → full re-handshake");
 
-            Serial.println("[HELIX] FD ownership revoked → renegotiate");
+            rehandshakeFromFD = true;
 
-            // Drop ownership unconditionally
-            ownerState          = OWNER_NONE;
-            handshakeLocked     = false;
-            handshakeInProgress = false;
-
-            // If we were not READY yet, do a full reset
-            if (!ready) {
-                Serial.println("[HELIX] FD before READY → hard reset");
-                resetHandshake();
-                return;
-            }
-
-            // READY already asserted → renegotiate ownership only
-            sendHS(HS7, sizeof(HS7), "HS7 (renegotiate)");
-            hs7AckMs = millis();
-            hsState  = HS_WAIT_FD_CHALLENGE;
+            resetHandshake();
             return;
         }
 
-        // reason == 0x00 → challenge / keepalive
+        // reason == 0x00 → ownership challenge / keepalive
     }
+
 
     printHex("[RX]", capBuf, capLen);
 
@@ -519,6 +523,7 @@ static void processFrame()
         Serial.println("[DBG] AF blob received");
         decode_volume_blob(capBuf);
 
+        autoReturnEnabled = capBuf[8];
         toneMenuEnabled        = capBuf[21];
         signalInputMenuEnabled = capBuf[19];
         soundSetupMenuEnabled  = capBuf[18];
@@ -641,18 +646,20 @@ static void processFrame()
 
     case HS_WAIT_FINAL:
         if (type == 0xFB && capBuf[4] == 0x2B) {
-            hs7AckMs = millis();
+
             ready = true;
             handshakeInProgress = false;
 
-            if (!configReadyPrinted) {
-                printMenuStates();
-                printToneStates();
-                configReadyPrinted = true;
-            }
+            // HARD RESET ACTIVE SLOT STATE
+            activeSlot = 0;
+            slotInitialized = false;
 
-            page_manager_refresh();
+            // Force MASTER slot selection once config is known
+            helix_set_active_slot(0);
+
             hsState = HS_WAIT_FD_CHALLENGE;
+            printMenuStates();
+
             Serial.println("[HELIX] HS7 ACK, READY asserted");
         }
         break;
@@ -858,6 +865,17 @@ void helix_loop()
         Serial.println("[HELIX] retrying DSP handshake");
         resetHandshake();
         lastRetryMs = millis();
+    }
+
+    if (ready &&
+        autoReturnEnabled &&
+        lastUserInteractionMs != 0 &&
+        millis() - lastUserInteractionMs > 5000)
+    {
+        // Semantic return to Master Volume ONLY
+        helix_set_active_slot(0);
+
+        lastUserInteractionMs = millis(); // prevent repeat firing
     }
 }
 

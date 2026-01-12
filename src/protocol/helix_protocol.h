@@ -24,6 +24,7 @@ uint8_t helix_get_master_index();
 void helix_volume_delta(int8_t clicks);
 void helix_force_resync();
 void helix_ui_bind_complete();
+void helix_note_user_interaction();
 
 // ---- Volume slot state (read-only for UI) ----
 DialSlot    helix_get_active_slot();
@@ -32,6 +33,7 @@ int         helix_get_slot_ui_value(DialSlot slot);
 void helix_set_active_slot(uint8_t slot);
 void helix_cycle_slot();
 bool helix_slot_valid(uint8_t slot);
+void helix_ui_bind_complete();
 
 // ---- Tone capability / state (read-only for UI) ----
 bool   helix_tone_enabled();
