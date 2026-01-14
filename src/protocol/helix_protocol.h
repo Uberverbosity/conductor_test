@@ -19,8 +19,6 @@ enum ToneBand {
     TONE_HIGH
 };
 
-uint8_t helix_get_master_index();
-
 void helix_volume_delta(int8_t clicks);
 void helix_force_resync();
 void helix_ui_bind_complete();
@@ -33,7 +31,6 @@ int         helix_get_slot_ui_value(DialSlot slot);
 void helix_set_active_slot(uint8_t slot);
 void helix_cycle_slot();
 bool helix_slot_valid(uint8_t slot);
-void helix_ui_bind_complete();
 
 // ---- Tone capability / state (read-only for UI) ----
 bool   helix_tone_enabled();
@@ -41,9 +38,10 @@ bool   helix_tone_low_valid();
 bool   helix_tone_high_valid();
 int8_t helix_tone_low_db();
 int8_t helix_tone_high_db();
+uint16_t helix_tone_low_hz();
+uint16_t helix_tone_high_hz();
 void helix_tone_set(ToneBand band, int8_t db);
 void helix_tone_delta(ToneBand band, int delta);
-void helix_tone_request(ToneBand band, int8_t target_db);
 
 // ---- Select Preset ----
 bool helix_select_preset(uint8_t idx);

@@ -13,7 +13,6 @@ static lv_obj_t* dial_label_bottom = nullptr;
 static lv_obj_t* preset_page_root  = nullptr;
 static lv_timer_t* no_config_timer = nullptr;
 static lv_timer_t* bg_flash_timer  = nullptr;
-static uint32_t    ui_generation   = 0;
 
 
 // ================= STYLING =================
@@ -256,6 +255,8 @@ void preset_page_select(void)
 
 void preset_page_refresh(void)
 {
+    // Sync with protocol state in case preset was updated during handshake
+    current_preset = helix_get_current_preset();
     update_center_label(current_preset);
 }
 

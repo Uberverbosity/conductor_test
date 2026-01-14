@@ -18,6 +18,7 @@
 struct TonePageCtx {
     lv_obj_t* arc;
     lv_obj_t* label_center;
+    lv_obj_t* label_frequency;
     lv_obj_t* label_bottom;
 };
 
@@ -38,17 +39,21 @@ static void tone_page_set_db_internal(void)
 {
     bool valid;
     int8_t db;
+    uint16_t freq;
 
     if (s_band == TONE_LOW) {
         valid = helix_tone_low_valid();
         db    = helix_tone_low_db();
+        freq  = helix_tone_low_hz();
     } else {
         valid = helix_tone_high_valid();
         db    = helix_tone_high_db();
+        freq  = helix_tone_high_hz();
     }
 
     if (!valid) {
         lv_label_set_text(ctx.label_center, "--");
+        lv_label_set_text(ctx.label_frequency, "");
         return;
     }
 
@@ -56,6 +61,11 @@ static void tone_page_set_db_internal(void)
     char buf[8];
     snprintf(buf, sizeof(buf), "%+d", db);
     lv_label_set_text(ctx.label_center, buf);
+
+    // ----- FREQUENCY LABEL -----
+    char freq_buf[16];
+    snprintf(freq_buf, sizeof(freq_buf), "%u Hz", freq);
+    lv_label_set_text(ctx.label_frequency, freq_buf);
 
     // ----- ARC CALCULATION -----
     int start, end;
@@ -137,6 +147,20 @@ void tone_page_create(lv_obj_t* parent, ToneBand band)
         lv_color_hex(0xFFFFFF),
         0
     );
+
+    // ----- FREQUENCY LABEL -----
+    ctx.label_frequency = lv_label_create(parent);
+    lv_obj_set_style_text_font(
+        ctx.label_frequency,
+        &lv_font_montserrat_20,
+        0
+    );
+    lv_obj_set_style_text_color(
+        ctx.label_frequency,
+        lv_color_hex(0xFFFFFF),
+        0
+    );
+    lv_obj_align(ctx.label_frequency, LV_ALIGN_BOTTOM_MID, 0, -70);
 
     // ----- BOTTOM LABEL -----
     ctx.label_bottom = lv_label_create(parent);

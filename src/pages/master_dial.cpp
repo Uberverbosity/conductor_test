@@ -112,8 +112,6 @@ void master_dial_set_absolute(int value)
     if (dial_value > 100) dial_value = 100;
 
     dial_update();
-
-    Serial.printf("[UI] Dial absolute = %d\n", dial_value);
 }
 
 void master_dial_set_delta(int delta)
@@ -137,7 +135,6 @@ void master_dial_set_slot(DialSlot slot)
 
     dial_apply_color();
 
-    Serial.printf("[UI] Active dial slot = %u\n", slot);
 }
 
 void master_dial_set_color(DialSlot slot, uint8_t r, uint8_t g, uint8_t b)

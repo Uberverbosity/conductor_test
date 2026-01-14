@@ -26,7 +26,6 @@ static uint32_t lastDspRxMs = 0;
 static uint32_t lastRetryMs = 0;
 static uint32_t hsStartMs = 0;
 static bool warnedNoRx = false;
-static uint32_t lastRenegotiateMs = 0;
 static uint32_t lastUserInteractionMs = 0;
 
 // ================= HANDSHAKE STATE =================
@@ -45,24 +44,14 @@ enum HelixHS {
     HS_READY
 };
 
-enum OwnershipState {
-    OWNER_NONE,
-    OWNER_NEGOTIATING,
-    OWNER_LATCHED
-};
-
-static OwnershipState ownerState = OWNER_NONE;
+static bool ownershipLatched = false;
 static HelixHS hsState = HS_IDLE;
 static bool ready = false;
 static bool handshakeLocked = false;
 static bool handshakeInProgress = false;
 static uint32_t hs7AckMs = 0;
-uint8_t slot_id = 0;
-static bool slotInitialized = false;
-static bool configReadyPrinted = false;
 static bool ui_bound = false;
 static bool dspOnline = false;
-static bool forceMasterAfterHandshake = false;
 static bool rehandshakeFromFD = false;
 
 // ================= MENU STATES =================
@@ -70,16 +59,12 @@ static bool toneMenuEnabled        = false;
 static bool signalInputMenuEnabled = false;
 static bool soundSetupMenuEnabled  = false;
 static bool bluetoothMenuEnabled   = false;
-static bool menuFlagsPrinted = false;
 static bool autoReturnEnabled = false;
 
 // ================= TONE STATES =================
-static bool     toneLowValid  = false;
-static bool     toneHighValid = false;
-static int8_t   toneLowDb     = 0;
-static int8_t   toneHighDb    = 0;
-static uint16_t toneLowHz     = 0;
-static uint16_t toneHighHz    = 0;
+static bool     toneValid[2] = {false, false};
+static int8_t   toneDb[2]     = {0, 0};
+static uint16_t toneHz[2]    = {0, 0};
 
 // ================= PRESET STATE =================
 static uint8_t currentPreset = 0;
@@ -111,6 +96,9 @@ struct VolumeModel {
     float   step_dB;
     uint8_t index;
     bool    valid;
+    uint8_t color_r;
+    uint8_t color_g;
+    uint8_t color_b;
 };
 
 #define NUM_SLOTS 4
@@ -119,9 +107,6 @@ struct VolumeModel {
 
 static VolumeModel volume[NUM_SLOTS] = {};
 static uint8_t activeSlot = 0;
-
-static uint8_t validSlotIdx[NUM_SLOTS];
-static uint8_t numValidSlots = 0;
 
 static const uint8_t SLOT_BASE[NUM_SLOTS] = {
     SLOT_BASE0 + 0 * SLOT_STRIDE,  // VOL1
@@ -170,25 +155,69 @@ static const char* slot_label_from_assign(uint8_t assign)
     }
 }
 
-static void printMenuStates()
+static const char* slot_assign_name(uint8_t assign)
 {
-    Serial.println("\n=== MENU ENABLE FLAGS ===");
+    switch (assign) {
+        case 0x00: return "Master";
+        case 0x01: return "Subwoofer";
+        case 0x02: return "Digital";
+        case 0x03: return "AUX/HEC 1";
+        case 0x04: return "AUX/HEC 2";
+        case 0x05: return "Rear Attenuation";
+        default:   return "Unknown";
+    }
+}
 
+static void update_tone_from_frame(const uint8_t* buf)
+{
+    toneDb[TONE_LOW]  = (int8_t)buf[7];
+    toneDb[TONE_HIGH] = (int8_t)buf[11];
+    toneValid[TONE_LOW]  = true;
+    toneValid[TONE_HIGH] = true;
+}
+
+static void printConfigSummary()
+{
+    Serial.println("\n=== Menu Configuration ===");
+    Serial.println("Main Menu: Volume Control");
+    Serial.print("Auto Return After 5 Seconds: ");
+    Serial.println(autoReturnEnabled ? "Enabled" : "Disabled");
     Serial.print("Tone: ");
     Serial.println(toneMenuEnabled ? "Enabled" : "Disabled");
-
     Serial.print("Signal Input: ");
     Serial.println(signalInputMenuEnabled ? "Enabled" : "Disabled");
-
     Serial.print("Sound Setup: ");
     Serial.println(soundSetupMenuEnabled ? "Enabled" : "Disabled");
-
     Serial.print("Bluetooth: ");
     Serial.println(bluetoothMenuEnabled ? "Enabled" : "Disabled");
 
-    Serial.print("Auto Return After 5 Seconds: ");
-    Serial.println(autoReturnEnabled ? "Enabled" : "Disabled");
+    Serial.println("=== Volume Control Configuration ===");
+    for (int s = 0; s < NUM_SLOTS; s++) {
+        VolumeModel &vm = volume[s];
+        Serial.printf("[VOL%d] ", s + 1);
+        if (!vm.valid) {
+            Serial.println("Disabled");
+            continue;
+        }
+        Serial.printf(
+            "Assigned=%s, Color=#%02X%02X%02X, Steps=%u, Range=%u dB, Step Size=%.2f dB, Startup Limiter=Disabled\n",
+            slot_assign_name(vm.assign),
+            vm.color_r, vm.color_g, vm.color_b,
+            vm.steps,
+            (uint16_t)vm.range_dB,
+            vm.step_dB
+        );
+    }
 
+    Serial.println("=== Tone Control ===");
+    if (toneValid[TONE_LOW]) {
+        Serial.printf("[TONE LOW] %u Hz, %+d dB\n", toneHz[TONE_LOW], toneDb[TONE_LOW]);
+    }
+    if (toneValid[TONE_HIGH]) {
+        Serial.printf("[TONE HIGH] %u Hz, %+d dB\n", toneHz[TONE_HIGH], toneDb[TONE_HIGH]);
+    }
+    Serial.println("=====================");
+    Serial.println();
 }
 
 static void printToneStates()
@@ -197,23 +226,23 @@ static void printToneStates()
         Serial.println("\n=== TONE CONFIG ===");
 
         Serial.print("Low Corner: ");
-        Serial.print(toneLowHz);
+        Serial.print(toneHz[TONE_LOW]);
         Serial.println(" Hz");
 
         Serial.print("Low Gain: ");
-        if (toneLowValid) {
-            Serial.printf("%+d dB\n", toneLowDb);
+        if (toneValid[TONE_LOW]) {
+            Serial.printf("%+d dB\n", toneDb[TONE_LOW]);
         } else {
             Serial.println("Unknown");
         }
 
         Serial.print("High Corner: ");
-        Serial.print(toneHighHz);
+        Serial.print(toneHz[TONE_HIGH]);
         Serial.println(" Hz");
 
         Serial.print("High Gain: ");
-        if (toneHighValid) {
-            Serial.printf("%+d dB\n", toneHighDb);
+        if (toneValid[TONE_HIGH]) {
+            Serial.printf("%+d dB\n", toneDb[TONE_HIGH]);
         } else {
             Serial.println("Unknown");
         }
@@ -236,19 +265,18 @@ static void resetHandshake()
     ready = false;
     handshakeLocked = false;
     handshakeInProgress = true;
+    ownershipLatched = false;
     for (int s = 0; s < NUM_SLOTS; s++) {
         volume[s].valid = false;
     }
     capLen = 0;
     hsState = HS_WAIT_ACK0;
 
-    menuFlagsPrinted = false;
-
     // Reset Tone States
-    toneLowValid  = false;
-    toneHighValid = false;
-    toneLowHz     = 0;
-    toneHighHz    = 0;
+    toneValid[TONE_LOW]  = false;
+    toneValid[TONE_HIGH] = false;
+    toneHz[TONE_LOW]     = 0;
+    toneHz[TONE_HIGH]    = 0;
 
     sendHS(HS0, sizeof(HS0), "HS0");
 }
@@ -289,6 +317,10 @@ static void decode_volume_blob(const uint8_t *buf)
         uint8_t g = buf[o + 2];
         uint8_t b = buf[o + 3];
 
+        vm.color_r = r;
+        vm.color_g = g;
+        vm.color_b = b;
+
         volume_page_set_color((DialSlot)s, r, g, b);
 
         Serial.printf(
@@ -302,18 +334,15 @@ static void decode_volume_blob(const uint8_t *buf)
 
     }
 
-    // ---- REBUILD VALID SLOT LIST ----
-    numValidSlots = 0;
-    for (int s = 0; s < NUM_SLOTS; s++) {
-        if (volume[s].valid) {
-            validSlotIdx[numValidSlots++] = s;
-        }
-    }
-
     // ---- Initialize active slot once config is known ----
-    if (!slotInitialized && numValidSlots > 0) {
-        helix_set_active_slot(validSlotIdx[0]);
-        slotInitialized = true;
+    if (activeSlot >= NUM_SLOTS || !volume[activeSlot].valid) {
+        // Find first valid slot
+        for (int s = 0; s < NUM_SLOTS; s++) {
+            if (volume[s].valid) {
+                helix_set_active_slot(s);
+                break;
+            }
+        }
     }
 
     page_manager_refresh();
@@ -364,14 +393,17 @@ static int slot_from_fa(uint8_t slot_id)
     }
 }
 
+static inline bool is_valid_slot(uint8_t slot)
+{
+    return slot < NUM_SLOTS && volume[slot].valid;
+}
+
 void helix_set_active_slot(uint8_t slot)
 {
-    if (slot >= NUM_SLOTS)
+    if (!is_valid_slot(slot))
         return;
 
     VolumeModel &vm = volume[slot];
-    if (!vm.valid)
-        return;
 
     // Prevent re-entrant spam
     if (activeSlot == slot)
@@ -393,13 +425,26 @@ void helix_set_active_slot(uint8_t slot)
 
 void helix_cycle_slot()
 {
-    if (numValidSlots < 2)
+    // Find current slot index in valid slots list
+    uint8_t validSlots[NUM_SLOTS];
+    uint8_t numValid = 0;
+    uint8_t currentIdx = 0xFF;
+
+    for (uint8_t s = 0; s < NUM_SLOTS; s++) {
+        if (volume[s].valid) {
+            validSlots[numValid++] = s;
+            if (s == activeSlot) {
+                currentIdx = numValid - 1;
+            }
+        }
+    }
+
+    if (numValid < 2)
         return;
 
-    static uint8_t idx = 0;
-
-    idx = (idx + 1) % numValidSlots;
-    helix_set_active_slot(validSlotIdx[idx]);
+    // Move to next valid slot
+    uint8_t nextIdx = (currentIdx + 1) % numValid;
+    helix_set_active_slot(validSlots[nextIdx]);
 }
 
 DialSlot helix_get_active_slot()
@@ -409,33 +454,24 @@ DialSlot helix_get_active_slot()
 
 const char* helix_get_slot_label(DialSlot slot)
 {
-    if (slot >= NUM_SLOTS)
+    if (!is_valid_slot(slot))
         return "";
 
-    VolumeModel &vm = volume[slot];
-    if (!vm.valid)
-        return "";
-
-    return slot_label_from_assign(vm.assign);
+    return slot_label_from_assign(volume[slot].assign);
 }
 
 int helix_get_slot_ui_value(DialSlot slot)
 {
-    if (slot >= NUM_SLOTS)
+    if (!is_valid_slot(slot))
         return 0;
 
     VolumeModel &vm = volume[slot];
-    if (!vm.valid)
-        return 0;
-
     return map(vm.index, 0, vm.steps, 0, 100);
 }
 
 bool helix_slot_valid(uint8_t slot)
 {
-    if (slot >= NUM_SLOTS)
-        return false;
-    return volume[slot].valid;
+    return is_valid_slot(slot);
 }
 
 void helix_force_resync()
@@ -471,6 +507,12 @@ uint8_t helix_get_current_preset()
 
 static void processFrame()
 {
+    // Minimum frame size check (frames should be at least 3 bytes: header + type)
+    if (capLen < 3) {
+        Serial.printf("[HELIX] Dropping invalid frame (len=%u)\n", capLen);
+        return;
+    }
+
     uint8_t type = capBuf[2];
 
     // Any non-FD frame implies DSP is alive
@@ -529,8 +571,8 @@ static void processFrame()
         soundSetupMenuEnabled  = capBuf[18];
         bluetoothMenuEnabled   = capBuf[20];
 
-        toneLowHz  = u16le(&capBuf[72]);
-        toneHighHz = u16le(&capBuf[82]);
+        toneHz[TONE_LOW]  = u16le(&capBuf[72]);
+        toneHz[TONE_HIGH] = u16le(&capBuf[82]);
     }
 
     if (type == 0xF9 && capBuf[4] == 0x2A && capBuf[5] == 0x04) {
@@ -538,18 +580,18 @@ static void processFrame()
     }
 
     // ---- RUNTIME TONE UPDATE ----
-    if (type == 0xF5 && capBuf[5] == 0x09) {
-
-        toneLowDb  = (int8_t)capBuf[7];
-        toneHighDb = (int8_t)capBuf[11];
-
-        toneLowValid  = true;
-        toneHighValid = true;
+    if (type == 0xF5 && capBuf[5] == 0x09 && !handshakeInProgress) {
+        update_tone_from_frame(capBuf);
 
         Serial.printf(
-            "[TONE RX] low=%+d dB high=%+d dB\n",
-            toneLowDb,
-            toneHighDb
+            "[TONE RX] Low=%u Hz, %+d dB\n",
+            toneHz[TONE_LOW],
+            toneDb[TONE_LOW]
+        );
+        Serial.printf(
+            "[TONE RX] High=%u Hz, %+d dB\n",
+            toneHz[TONE_HIGH],
+            toneDb[TONE_HIGH]
         );
 
         page_manager_refresh();
@@ -572,6 +614,8 @@ static void processFrame()
         capBuf[5] == 0x06)
     {
         currentPreset = capBuf[6];
+        // Refresh preset page if it's currently active to sync UI
+        page_manager_refresh();
     }
 
     // ---- Handshake FSM ----
@@ -626,17 +670,17 @@ static void processFrame()
 
     case HS_WAIT_TONE:
         if (type == 0xF5 && capBuf[5] == 0x09) {
-
-            toneLowDb  = (int8_t)capBuf[7];
-            toneHighDb = (int8_t)capBuf[11];
-
-            toneLowValid  = true;
-            toneHighValid = true;
+            update_tone_from_frame(capBuf);
 
             Serial.printf(
-                "[TONE BASELINE] low=%+d dB high=%+d dB\n",
-                toneLowDb,
-                toneHighDb
+                "[TONE RX] Low=%u Hz, %+d dB\n",
+                toneHz[TONE_LOW],
+                toneDb[TONE_LOW]
+            );
+            Serial.printf(
+                "[TONE RX] High=%u Hz, %+d dB\n",
+                toneHz[TONE_HIGH],
+                toneDb[TONE_HIGH]
             );
 
             sendHS(HS7, sizeof(HS7), "HS7");
@@ -650,15 +694,12 @@ static void processFrame()
             ready = true;
             handshakeInProgress = false;
 
-            // HARD RESET ACTIVE SLOT STATE
-            activeSlot = 0;
-            slotInitialized = false;
-
             // Force MASTER slot selection once config is known
             helix_set_active_slot(0);
 
             hsState = HS_WAIT_FD_CHALLENGE;
-            printMenuStates();
+            hs7AckMs = millis();  // Initialize timestamp for FD challenge timeout
+            printConfigSummary();
 
             Serial.println("[HELIX] HS7 ACK, READY asserted");
         }
@@ -672,7 +713,7 @@ static void processFrame()
 
             Serial.println("[HELIX] FD challenge answered");
 
-            ownerState          = OWNER_LATCHED;
+            ownershipLatched    = true;
             handshakeLocked     = true;
             handshakeInProgress = false;
 
@@ -682,10 +723,10 @@ static void processFrame()
         }
 
         // Timeout ONLY allowed on cold boot
-        if (ownerState == OWNER_NONE &&
+        if (!ownershipLatched &&
             millis() - hs7AckMs > 100)
         {
-            ownerState          = OWNER_LATCHED;
+            ownershipLatched    = true;
             handshakeLocked     = true;
             handshakeInProgress = false;
 
@@ -728,10 +769,12 @@ bool helix_ready()
 
 // ================== TONE CAPABILITY ================
 bool helix_tone_enabled()      { return toneMenuEnabled; }
-bool helix_tone_low_valid()    { return toneLowValid; }
-bool helix_tone_high_valid()   { return toneHighValid; }
-int8_t helix_tone_low_db()     { return toneLowDb; }
-int8_t helix_tone_high_db()    { return toneHighDb; }
+bool helix_tone_low_valid()    { return toneValid[TONE_LOW]; }
+bool helix_tone_high_valid()   { return toneValid[TONE_HIGH]; }
+int8_t helix_tone_low_db()     { return toneDb[TONE_LOW]; }
+int8_t helix_tone_high_db()    { return toneDb[TONE_HIGH]; }
+uint16_t helix_tone_low_hz()   { return toneHz[TONE_LOW]; }
+uint16_t helix_tone_high_hz()  { return toneHz[TONE_HIGH]; }
 
 void helix_tone_set(ToneBand band, int8_t db)
 {
@@ -739,7 +782,7 @@ void helix_tone_set(ToneBand band, int8_t db)
         return;
 
     uint8_t band_id = (band == TONE_LOW) ? 0x00 : 0x01;
-    uint16_t freq   = (band == TONE_LOW) ? toneLowHz : toneHighHz;
+    uint16_t freq   = toneHz[band];
 
     const uint8_t wake[] = { 0x42, 0x08 };
     dsp->write(wake, sizeof(wake));
@@ -773,9 +816,7 @@ void helix_tone_delta(ToneBand band, int delta)
     if (!ready)
         return;
 
-    int8_t current =
-        (band == TONE_LOW) ? toneLowDb : toneHighDb;
-
+    int8_t current = toneDb[band];
     int8_t target = current + delta;
 
     if (target < -12) target = -12;
@@ -784,11 +825,7 @@ void helix_tone_delta(ToneBand band, int delta)
         return;
 
     helix_tone_set(band, target);
-
-    if (band == TONE_LOW)
-        toneLowDb = target;
-    else
-        toneHighDb = target;
+    toneDb[band] = target;
 
     page_manager_refresh();
 }
@@ -874,6 +911,7 @@ void helix_loop()
     {
         // Semantic return to Master Volume ONLY
         helix_set_active_slot(0);
+        page_manager_set_to_master_volume();
 
         lastUserInteractionMs = millis(); // prevent repeat firing
     }

@@ -19,3 +19,4 @@ void page_manager_refresh();
 void page_manager_encoder_delta(int delta);
 void page_manager_encoder_button();
 void page_manager_encoder_long_press();
+void page_manager_set_to_master_volume();

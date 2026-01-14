@@ -11,12 +11,11 @@ static const char* page_name(PageId p);
 
 static bool page_available(PageId p)
 {
-    switch (p) {
-        case PAGE_VOL_0: return helix_slot_valid(0);
-        case PAGE_VOL_1: return helix_slot_valid(1);
-        case PAGE_VOL_2: return helix_slot_valid(2);
-        case PAGE_VOL_3: return helix_slot_valid(3);
+    if (p >= PAGE_VOL_0 && p <= PAGE_VOL_3) {
+        return helix_slot_valid(p - PAGE_VOL_0);
+    }
 
+    switch (p) {
         case PAGE_TONE_LOW:
         case PAGE_TONE_HIGH:
             return helix_tone_enabled();
@@ -70,24 +69,13 @@ static void create_page(PageId p)
 
 static void enter_page(PageId p)
 {
-    switch (p) {
-        case PAGE_VOL_0:
-            helix_set_active_slot(0);
-            volume_page_on_enter();
-            break;
-        case PAGE_VOL_1:
-            helix_set_active_slot(1);
-            volume_page_on_enter();
-            break;
-        case PAGE_VOL_2:
-            helix_set_active_slot(2);
-            volume_page_on_enter();
-            break;
-        case PAGE_VOL_3:
-            helix_set_active_slot(3);
-            volume_page_on_enter();
-            break;
+    if (p >= PAGE_VOL_0 && p <= PAGE_VOL_3) {
+        helix_set_active_slot(p - PAGE_VOL_0);
+        volume_page_on_enter();
+        return;
+    }
 
+    switch (p) {
         case PAGE_TONE_LOW:
             tone_page_on_enter(TONE_LOW);
             break;
@@ -95,9 +83,10 @@ static void enter_page(PageId p)
         case PAGE_TONE_HIGH:
             tone_page_on_enter(TONE_HIGH);
             break;
+
         case PAGE_PRESET:
             preset_page_on_enter();
-            break;            
+            break;
     }
 }
 
@@ -107,7 +96,7 @@ void page_manager_init(lv_obj_t* root)
     current_page = PAGE_VOL_0;
     create_page(current_page);
     enter_page(current_page);
-    helix_ui_bind_complete();
+    // Note: helix_ui_bind_complete() is called separately to avoid double-init recursion
 }
 
 void page_manager_next()
@@ -126,49 +115,42 @@ void page_manager_prev()
 
 void page_manager_refresh()
 {
-    switch (current_page) {
-        case PAGE_VOL_0:
-        case PAGE_VOL_1:
-        case PAGE_VOL_2:
-        case PAGE_VOL_3:
-            volume_page_refresh();
-            break;
-
-        case PAGE_TONE_LOW:
-        case PAGE_TONE_HIGH:
-            tone_page_refresh();
-            break;
-        case PAGE_PRESET:
-            preset_page_refresh();
-            break;    
+    if (current_page >= PAGE_VOL_0 && current_page <= PAGE_VOL_3) {
+        volume_page_refresh();
+    } else {
+        switch (current_page) {
+            case PAGE_TONE_LOW:
+            case PAGE_TONE_HIGH:
+                tone_page_refresh();
+                break;
+            case PAGE_PRESET:
+                preset_page_refresh();
+                break;
         }
+    }
 }
 
 void page_manager_encoder_delta(int delta)
 {
-    switch (current_page) {
+    if (current_page >= PAGE_VOL_0 && current_page <= PAGE_VOL_3) {
+        volume_page_delta(delta);
+        page_manager_refresh();
+    } else {
+        switch (current_page) {
+            case PAGE_TONE_LOW:
+                tone_page_delta(TONE_LOW, delta);
+                page_manager_refresh();
+                break;
 
-        case PAGE_VOL_0:
-        case PAGE_VOL_1:
-        case PAGE_VOL_2:
-        case PAGE_VOL_3:
-            volume_page_delta(delta);
-            page_manager_refresh();
-            break;
+            case PAGE_TONE_HIGH:
+                tone_page_delta(TONE_HIGH, delta);
+                page_manager_refresh();
+                break;
 
-        case PAGE_TONE_LOW:
-            tone_page_delta(TONE_LOW, delta);
-            page_manager_refresh();
-            break;
-
-        case PAGE_TONE_HIGH:
-            tone_page_delta(TONE_HIGH, delta);
-            page_manager_refresh();
-            break;
-
-        case PAGE_PRESET:
-            preset_page_delta(delta);
-            break;
+            case PAGE_PRESET:
+                preset_page_delta(delta);
+                break;
+        }
     }
     helix_note_user_interaction();
 }
@@ -190,4 +172,13 @@ void page_manager_encoder_long_press()
             break;
     }
     helix_note_user_interaction();
+}
+
+void page_manager_set_to_master_volume()
+{
+    if (current_page != PAGE_VOL_0) {
+        current_page = PAGE_VOL_0;
+        create_page(current_page);
+        enter_page(current_page);
+    }
 }

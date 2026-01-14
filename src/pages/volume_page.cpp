@@ -114,7 +114,6 @@ void volume_page_set_absolute(int value)
 
     dial_update();
 
-    Serial.printf("[UI] Dial absolute = %d\n", dial_value);
 }
 
 void volume_page_set_delta(int delta)
@@ -138,7 +137,6 @@ void volume_page_set_slot(DialSlot slot)
 
     dial_apply_color();
 
-    Serial.printf("[UI] Active dial slot = %u\n", slot);
 }
 
 void volume_page_set_color(DialSlot slot, uint8_t r, uint8_t g, uint8_t b)

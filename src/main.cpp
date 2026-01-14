@@ -164,6 +164,11 @@ void loop()
     bool now_ready = helix_ready();
     if (now_ready && !last_helix_ready) {
         Serial.println("[HELIX] helix_ready transitioned to TRUE");
+        // Call helix_ui_bind_complete() on ready transition to handle re-handshake UI reinit
+        // (only if UI was already initialized, to avoid double init on first boot)
+        if (ui_initialized) {
+            helix_ui_bind_complete();
+        }
     }
     last_helix_ready = now_ready;
 
@@ -171,7 +176,7 @@ void loop()
     if (helix_ready() && !ui_initialized) {
         Serial.println("[UI] Initializing page manager");
         page_manager_init(lv_scr_act());
-        helix_ui_bind_complete();
+        helix_ui_bind_complete();  // Must be called after page_manager_init()
         ui_initialized = true;
     }
 
