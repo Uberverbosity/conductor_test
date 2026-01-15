@@ -216,7 +216,7 @@ static void printConfigSummary()
     if (toneValid[TONE_HIGH]) {
         Serial.printf("[TONE HIGH] %u Hz, %+d dB\n", toneHz[TONE_HIGH], toneDb[TONE_HIGH]);
     }
-    Serial.println("=====================");
+    Serial.println("=========================");
     Serial.println();
 }
 
@@ -771,6 +771,9 @@ bool helix_ready()
 bool helix_tone_enabled()      { return toneMenuEnabled; }
 bool helix_tone_low_valid()    { return toneValid[TONE_LOW]; }
 bool helix_tone_high_valid()   { return toneValid[TONE_HIGH]; }
+
+// ================== SIGNAL INPUT CAPABILITY ================
+bool helix_signal_input_enabled() { return signalInputMenuEnabled; }
 int8_t helix_tone_low_db()     { return toneDb[TONE_LOW]; }
 int8_t helix_tone_high_db()    { return toneDb[TONE_HIGH]; }
 uint16_t helix_tone_low_hz()   { return toneHz[TONE_LOW]; }

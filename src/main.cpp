@@ -5,6 +5,7 @@
 #include "pages/volume_page.h"
 #include "pages/page_manager.h"
 #include "protocol/helix_protocol.h"
+#include "settings.h"
 
 // ================== PINS ==================
 #define PIN_BL      8
@@ -47,8 +48,11 @@ static bool btn_prev = true;
 static bool btn_down = false;
 static uint32_t btn_down_ms = 0;
 static const uint32_t LONG_PRESS_MS = 400;
+static const uint32_t DOUBLE_CLICK_MS = 300;
 
 static bool long_press_fired = false;
+static bool click_pending = false;
+static uint32_t click_ms = 0;
 
 static inline void poll_encoder_button()
 {
@@ -65,6 +69,7 @@ static inline void poll_encoder_button()
     if (!now && btn_down && !long_press_fired) {
         if (millis() - btn_down_ms >= LONG_PRESS_MS) {
             long_press_fired = true;
+            click_pending = false;
             page_manager_encoder_long_press();
         }
     }
@@ -74,12 +79,22 @@ static inline void poll_encoder_button()
         btn_down = false;
 
         if (!long_press_fired) {
-            // short press
-            page_manager_encoder_button();
+            if (click_pending && (millis() - click_ms) <= DOUBLE_CLICK_MS) {
+                click_pending = false;
+                page_manager_encoder_double_click();
+            } else {
+                click_pending = true;
+                click_ms = millis();
+            }
         }
     }
 
     btn_prev = now;
+
+    if (click_pending && (millis() - click_ms) > DOUBLE_CLICK_MS) {
+        click_pending = false;
+        page_manager_encoder_button();
+    }
 }
 
 static inline void poll_encoder()
@@ -104,6 +119,8 @@ void setup()
     Serial.begin(115200);
     delay(300);                     // <-- REQUIRED on ESP32
     Serial.println("[BOOT] setup enter");
+
+    settings_init();
 
     pinMode(PIN_BL, OUTPUT);
     digitalWrite(PIN_BL, LOW);

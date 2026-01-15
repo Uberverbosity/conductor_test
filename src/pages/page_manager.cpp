@@ -3,9 +3,12 @@
 #include "pages/tone_page.h"
 #include "protocol/helix_protocol.h"
 #include "pages/preset_page.h"
+#include "pages/signal_input_page.h"
+#include "pages/config_page.h"
 
 static lv_obj_t* root_obj;
 static PageId current_page;
+static PageId last_page_before_config = PAGE_VOL_0;
 
 static const char* page_name(PageId p);
 
@@ -22,6 +25,12 @@ static bool page_available(PageId p)
 
         case PAGE_PRESET:
             return true;
+
+        case PAGE_SIGNAL_INPUT:
+            return helix_signal_input_enabled();
+
+        case PAGE_CONFIG:
+            return false;
 
         default:
             return false;
@@ -64,6 +73,14 @@ static void create_page(PageId p)
         case PAGE_PRESET:
             preset_page_create(root_obj);
             break;
+
+        case PAGE_SIGNAL_INPUT:
+            signal_input_page_create(root_obj);
+            break;
+
+        case PAGE_CONFIG:
+            config_page_create(root_obj);
+            break;
     }
 }
 
@@ -87,6 +104,14 @@ static void enter_page(PageId p)
         case PAGE_PRESET:
             preset_page_on_enter();
             break;
+
+        case PAGE_SIGNAL_INPUT:
+            signal_input_page_on_enter();
+            break;
+
+        case PAGE_CONFIG:
+            config_page_on_enter();
+            break;
     }
 }
 
@@ -94,6 +119,7 @@ void page_manager_init(lv_obj_t* root)
 {
     root_obj = root;
     current_page = PAGE_VOL_0;
+    last_page_before_config = current_page;
     create_page(current_page);
     enter_page(current_page);
     // Note: helix_ui_bind_complete() is called separately to avoid double-init recursion
@@ -126,6 +152,12 @@ void page_manager_refresh()
             case PAGE_PRESET:
                 preset_page_refresh();
                 break;
+            case PAGE_SIGNAL_INPUT:
+                signal_input_page_refresh();
+                break;
+            case PAGE_CONFIG:
+                config_page_refresh();
+                break;
         }
     }
 }
@@ -150,6 +182,13 @@ void page_manager_encoder_delta(int delta)
             case PAGE_PRESET:
                 preset_page_delta(delta);
                 break;
+
+            case PAGE_SIGNAL_INPUT:
+                signal_input_page_delta(delta);
+                break;
+            case PAGE_CONFIG:
+                config_page_delta(delta);
+                break;
         }
     }
     helix_note_user_interaction();
@@ -157,20 +196,36 @@ void page_manager_encoder_delta(int delta)
 
 void page_manager_encoder_button()
 {
-    page_manager_next();
+    if (current_page == PAGE_CONFIG) {
+        config_page_select();
+    } else {
+        page_manager_next();
+    }
+    helix_note_user_interaction();
+}
+
+void page_manager_encoder_double_click()
+{
+    if (current_page == PAGE_PRESET) {
+        preset_page_select();
+    }
     helix_note_user_interaction();
 }
 
 void page_manager_encoder_long_press()
 {
-    switch (current_page) {
-        case PAGE_PRESET:
-            preset_page_select();
-            break;
-
-        default:
-            break;
+    if (current_page == PAGE_CONFIG) {
+        if (config_page_back()) {
+            helix_note_user_interaction();
+            return;
+        }
+        current_page = last_page_before_config;
+    } else {
+        last_page_before_config = current_page;
+        current_page = PAGE_CONFIG;
     }
+    create_page(current_page);
+    enter_page(current_page);
     helix_note_user_interaction();
 }
 

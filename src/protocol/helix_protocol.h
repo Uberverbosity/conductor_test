@@ -43,6 +43,9 @@ uint16_t helix_tone_high_hz();
 void helix_tone_set(ToneBand band, int8_t db);
 void helix_tone_delta(ToneBand band, int delta);
 
+// ---- Signal Input capability (read-only for UI) ----
+bool helix_signal_input_enabled();
+
 // ---- Select Preset ----
 bool helix_select_preset(uint8_t idx);
 uint8_t helix_get_current_preset();
