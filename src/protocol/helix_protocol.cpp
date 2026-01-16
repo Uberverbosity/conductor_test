@@ -4,6 +4,7 @@
 #include "pages/volume_page.h"
 #include "pages/page_manager.h"
 #include "pages/preset_page.h"
+#include "settings.h"
 
 //#include "fonts/lv_font_montserrat_64.h"
 
@@ -1064,7 +1065,19 @@ void helix_volume_delta(int8_t clicks)
     if (!vm.valid)
         return;
 
-    int next = (int)vm.index + clicks;
+    // Use master step size override instead of blob step_dB
+    // Convert clicks to dB change using master step size, then to index steps
+    float master_step_dB = settings_get_master_step_size_dB();
+    float db_change = clicks * master_step_dB;
+    
+    // Convert dB change to index steps using the blob's step_dB
+    // If step_dB is 0, fall back to 1 step per click
+    float index_delta = (vm.step_dB > 0.0f) ? (db_change / vm.step_dB) : (float)clicks;
+    
+    // Round to nearest integer for index steps
+    int step_change = (int)(index_delta + (index_delta >= 0 ? 0.5f : -0.5f));
+    
+    int next = (int)vm.index + step_change;
 
     if (next < 0)           next = 0;
     if (next > vm.steps)    next = vm.steps;
