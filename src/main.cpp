@@ -151,6 +151,10 @@ void setup()
         LV_DISPLAY_RENDER_MODE_PARTIAL
     );
     
+#ifdef DEV_MODE
+    Serial.println("[DEV] Development mode enabled");
+    helix_dev_init();
+#else
     // ---- UART SECOND ----
     Serial1.begin(
         230400,
@@ -164,6 +168,7 @@ void setup()
 
     helix_begin(Serial1);
     Serial.println("[BOOT] helix_begin returned");
+#endif
 
     enc_prev = (digitalRead(PIN_ENC_A) << 1) | digitalRead(PIN_ENC_B);
 
@@ -176,7 +181,9 @@ void loop()
     static bool ui_initialized  = false;
 
     // ---- Protocol RX ----
+#ifndef DEV_MODE
     helix_loop();
+#endif
 
     bool now_ready = helix_ready();
     if (now_ready && !last_helix_ready) {

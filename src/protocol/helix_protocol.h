@@ -4,6 +4,7 @@
 void helix_begin(HardwareSerial& dsp);
 void helix_loop();
 bool helix_ready();
+void helix_dev_init();
 
 // ------ Volume slot identifiers ------
 typedef enum {

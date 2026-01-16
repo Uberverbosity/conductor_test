@@ -115,6 +115,76 @@ static const uint8_t SLOT_BASE[NUM_SLOTS] = {
     SLOT_BASE0 + 3 * SLOT_STRIDE   // VOL4
 };
 
+#ifdef DEV_MODE
+static void dev_seed_volume_models()
+{
+    struct SlotSeed {
+        uint8_t assign;
+        uint8_t steps;
+        uint8_t index;
+        uint8_t r;
+        uint8_t g;
+        uint8_t b;
+    };
+
+    const SlotSeed seeds[NUM_SLOTS] = {
+        { 0x00, 60, 30, 0x5C, 0xB8, 0xFF }, // Master
+        { 0x01, 60, 24, 0xFF, 0x88, 0x55 }, // Subwoofer
+        { 0x02, 60, 36, 0x93, 0xD7, 0xFF }, // Digital
+        { 0x03, 60, 18, 0xA0, 0xFF, 0xA0 }  // AUX/HEC 1
+    };
+
+    for (uint8_t s = 0; s < NUM_SLOTS; s++) {
+        const SlotSeed &seed = seeds[s];
+        VolumeModel &vm = volume[s];
+
+        vm.assign = seed.assign;
+        vm.steps = seed.steps;
+        vm.range_dB = 60.0f;
+        vm.step_dB = vm.range_dB / (float)vm.steps;
+        vm.index = seed.index;
+        vm.valid = true;
+        vm.color_r = seed.r;
+        vm.color_g = seed.g;
+        vm.color_b = seed.b;
+    }
+}
+
+void helix_dev_init()
+{
+    ready = true;
+    dspOnline = false;
+    handshakeLocked = true;
+    handshakeInProgress = false;
+    hsState = HS_READY;
+    ownershipLatched = true;
+    warnedNoRx = false;
+    lastDspRxMs = 0;
+    lastRetryMs = 0;
+    lastUserInteractionMs = 0;
+
+    toneMenuEnabled = true;
+    signalInputMenuEnabled = true;
+    soundSetupMenuEnabled = false;
+    bluetoothMenuEnabled = false;
+    autoReturnEnabled = false;
+
+    toneValid[TONE_LOW] = true;
+    toneValid[TONE_HIGH] = true;
+    toneDb[TONE_LOW] = 0;
+    toneDb[TONE_HIGH] = 0;
+    toneHz[TONE_LOW] = 80;
+    toneHz[TONE_HIGH] = 8000;
+
+    currentPreset = 0;
+    activeSlot = 0;
+
+    dev_seed_volume_models();
+
+    Serial.println("[DEV] helix_dev_init: mock protocol state ready");
+}
+#endif
+
 // ================= UTILS =================
 
 static uint16_t u16le(const uint8_t *b)
@@ -476,6 +546,10 @@ bool helix_slot_valid(uint8_t slot)
 
 void helix_force_resync()
 {
+#ifdef DEV_MODE
+    Serial.println("[DEV] helix_force_resync ignored");
+    return;
+#endif
     Serial.println("[HELIX] manual resync requested");
 
     handshakeLocked = false;
@@ -488,6 +562,20 @@ void helix_force_resync()
 void helix_ui_bind_complete()
 {
     ui_bound = true;
+
+#ifdef DEV_MODE
+    for (uint8_t s = 0; s < NUM_SLOTS; s++) {
+        if (!volume[s].valid)
+            continue;
+        volume_page_set_color(
+            (DialSlot)s,
+            volume[s].color_r,
+            volume[s].color_g,
+            volume[s].color_b
+        );
+    }
+    page_manager_refresh();
+#endif
 
     if (rehandshakeFromFD) {
         Serial.println("[UI] Reinitializing page manager after re-handshake");
@@ -742,8 +830,20 @@ static void processFrame()
 
 // ================= PUBLIC API =================
 
+#ifndef DEV_MODE
+void helix_dev_init()
+{
+    // No-op in production builds
+}
+#endif
+
 void helix_begin(HardwareSerial& dspSerial)
 {
+#ifdef DEV_MODE
+    (void)dspSerial;
+    helix_dev_init();
+    return;
+#endif
     dsp = &dspSerial;
 
     hsState = HS_IDLE;
@@ -781,6 +881,15 @@ uint16_t helix_tone_high_hz()  { return toneHz[TONE_HIGH]; }
 
 void helix_tone_set(ToneBand band, int8_t db)
 {
+#ifdef DEV_MODE
+    if (!ready)
+        return;
+
+    toneDb[band] = db;
+    toneValid[band] = true;
+    page_manager_refresh();
+    return;
+#endif
     if (!ready)
         return;
 
@@ -819,6 +928,19 @@ void helix_tone_delta(ToneBand band, int delta)
     if (!ready)
         return;
 
+#ifdef DEV_MODE
+    int8_t current = toneDb[band];
+    int8_t target = current + delta;
+
+    if (target < -12) target = -12;
+    if (target >  12) target =  12;
+    if (target == current)
+        return;
+
+    toneDb[band] = target;
+    toneValid[band] = true;
+    page_manager_refresh();
+#else
     int8_t current = toneDb[band];
     int8_t target = current + delta;
 
@@ -831,11 +953,20 @@ void helix_tone_delta(ToneBand band, int delta)
     toneDb[band] = target;
 
     page_manager_refresh();
+#endif
 }
 
 // ================= PRESET SELECT ==============
 bool helix_select_preset(uint8_t idx)
 {
+#ifdef DEV_MODE
+    if (!ready || idx > 9)
+        return false;
+
+    currentPreset = idx;
+    preset_page_on_ack(idx, 0x01);
+    return true;
+#endif
     if (!ready || !dsp || idx > 9)
         return false;
 
@@ -941,6 +1072,10 @@ void helix_volume_delta(int8_t clicks)
 
     vm.index = (uint8_t)next;
 
+#ifdef DEV_MODE
+    int ui = map(vm.index, 0, vm.steps, 0, 100);
+    volume_page_set_absolute(ui);
+#else
     uint8_t volCode = VOL_MIN + vm.index + activeSlot;
 
     const uint8_t wake[] = { 0x42, 0x06 };
@@ -962,5 +1097,6 @@ void helix_volume_delta(int8_t clicks)
 
     int ui = map(vm.index, 0, vm.steps, 0, 100);
     volume_page_set_absolute(ui);
+#endif
 }
 
