@@ -133,7 +133,7 @@ void setup()
     lv_init();
 
     tft.init();
-    tft.setRotation(1);
+    tft.setRotation(3);  // 180° rotation from rotation 1
     tft.fillScreen(TFT_BLACK);
 
     lv_display_t* disp = lv_display_create(240, 240);

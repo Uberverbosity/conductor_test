@@ -290,7 +290,7 @@ static void basic_tone_create(lv_obj_t* parent, ToneBand band)
     ctx.label_bottom = lv_label_create(parent);
     lv_obj_set_style_text_font(
         ctx.label_bottom,
-        &lv_font_montserrat_20,
+        &lv_font_montserrat_24,
         0
     );
     lv_obj_set_style_text_color(
@@ -378,7 +378,7 @@ static void mcintosh_tone_create(lv_obj_t* parent, ToneBand band)
 
     // Center label (dB value)
     mc_tone_label_center = lv_label_create(mc_tone_bg);
-    lv_obj_set_style_text_font(mc_tone_label_center, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(mc_tone_label_center, &lv_font_montserrat_24, 0);
     lv_obj_set_style_text_color(mc_tone_label_center, MC_TEXT_COLOR, 0);
     lv_obj_set_style_text_align(mc_tone_label_center, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(mc_tone_label_center, LV_ALIGN_CENTER, 0, 10);
@@ -392,7 +392,7 @@ static void mcintosh_tone_create(lv_obj_t* parent, ToneBand band)
 
     // Bottom label (Tone Low / Tone High)
     mc_tone_label_bottom = lv_label_create(mc_tone_bottom);
-    lv_obj_set_style_text_font(mc_tone_label_bottom, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(mc_tone_label_bottom, &lv_font_montserrat_24, 0);
     lv_obj_set_style_text_color(mc_tone_label_bottom, MC_TEXT_COLOR, 0);
     lv_obj_set_style_text_align(mc_tone_label_bottom, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(mc_tone_label_bottom, LV_ALIGN_BOTTOM_MID, 0, -30);

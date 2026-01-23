@@ -212,7 +212,7 @@ static void mcintosh_create(lv_obj_t* parent)
     lv_obj_set_style_border_width(mc_bottom, 0, 0);
 
     dial_function = lv_label_create(mc_bottom);
-    lv_obj_set_style_text_font(dial_function, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(dial_function, &lv_font_montserrat_24, 0);
     lv_obj_set_style_text_color(dial_function, MC_TEXT_COLOR, 0);
     lv_obj_set_style_text_align(dial_function, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(dial_function, LV_ALIGN_CENTER, 0, 0);
@@ -285,7 +285,7 @@ void volume_page_create(lv_obj_t* parent)
 
     // ----- FUNCTION LABEL -----
     dial_function = lv_label_create(parent);
-    lv_obj_set_style_text_font(dial_function, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(dial_function, &lv_font_montserrat_24, 0);
     lv_obj_align(dial_function, LV_ALIGN_BOTTOM_MID, 0, -35);
     lv_obj_set_style_text_color(dial_function, DIAL_FONT_COLOR, 0);
 
