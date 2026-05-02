@@ -14,7 +14,6 @@
 #define GAP_US           300
 #define FRAME_DELAY_US   600
 
-#define VOL_MIN 0x30     // DSP base volume code
 #define DSP_SILENCE_MS  3000
 
 // ================= SERIAL =================
@@ -1089,19 +1088,22 @@ void helix_volume_delta(int8_t clicks)
     int ui = map(vm.index, 0, vm.steps, 0, 100);
     volume_page_set_absolute(ui);
 #else
-    uint8_t volCode = VOL_MIN + vm.index + activeSlot;
+    uint8_t volCode = (uint8_t)(0x30u + vm.index + activeSlot);
 
-    const uint8_t wake[] = { 0x42, 0x06 };
+    const uint8_t wake[] = {0x42, 0x06};
     dsp->write(wake, sizeof(wake));
     dsp->flush();
     delayMicroseconds(FRAME_DELAY_US);
 
     uint8_t body[] = {
-        0xF9, 0x01, 0x2B, 0x04,
-        activeSlot,     // ← slot selector (0–3)
+        0xF9,
+        0x01,
+        0x2B,
+        0x04,
+        activeSlot,
         vm.index,
         0x01,
-        volCode
+        volCode,
     };
 
     printHex("[TX VOL]", body, sizeof(body));
