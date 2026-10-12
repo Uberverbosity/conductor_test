@@ -1,5 +1,6 @@
 #include "helix_protocol.h"
 #include <Arduino.h>
+#include <Preferences.h>
 #include "pages/dial_page.h"
 
 // ================= CONFIG =================
@@ -10,6 +11,8 @@
 
 #define VOL_MIN 0x30     // DSP base volume code
 #define DSP_SILENCE_MS  3000
+
+#define ASSIGN_DIGITAL   0x02
 
 // ================= SERIAL =================
 
@@ -83,6 +86,13 @@ static uint8_t activeSlot = 0;
 static uint8_t validSlotIdx[NUM_SLOTS];
 static uint8_t numValidSlots = 0;
 
+// Last user-set index per Conductor assign (survives input switch / resync).
+// Keyed by assign id so slot remapping in PC-Tool does not lose Digital Level.
+static bool    stickyValid[256] = {};
+static uint8_t stickyIndex[256] = {};
+static Preferences volPrefs;
+static bool volPrefsOpen = false;
+
 static const uint8_t SLOT_BASE[NUM_SLOTS] = {
     SLOT_BASE0 + 0 * SLOT_STRIDE,  // VOL1
     SLOT_BASE0 + 1 * SLOT_STRIDE,  // VOL2
@@ -92,9 +102,141 @@ static const uint8_t SLOT_BASE[NUM_SLOTS] = {
 
 // ================= UTILS =================
 
+static void printHex(const char* tag, const uint8_t* buf, size_t len);
+
 static uint16_t u16le(const uint8_t *b)
 {
     return (uint16_t)b[0] | ((uint16_t)b[1] << 8);
+}
+
+static void sticky_prefs_begin()
+{
+    if (!volPrefsOpen) {
+        volPrefsOpen = volPrefs.begin("helix_vol", false);
+    }
+}
+
+static void sticky_load_assign(uint8_t assign)
+{
+    if (assign == 0xFF)
+        return;
+
+    sticky_prefs_begin();
+    if (!volPrefsOpen)
+        return;
+
+    char key[8];
+    snprintf(key, sizeof(key), "a%02X", assign);
+    if (!volPrefs.isKey(key))
+        return;
+
+    uint8_t idx = volPrefs.getUChar(key, 0);
+    stickyIndex[assign] = idx;
+    stickyValid[assign] = true;
+    Serial.printf("[STICKY] loaded assign=%02X idx=%u\n", assign, idx);
+}
+
+static void sticky_save_assign(uint8_t assign, uint8_t idx)
+{
+    if (assign == 0xFF)
+        return;
+
+    stickyIndex[assign] = idx;
+    stickyValid[assign] = true;
+
+    sticky_prefs_begin();
+    if (!volPrefsOpen)
+        return;
+
+    char key[8];
+    snprintf(key, sizeof(key), "a%02X", assign);
+    volPrefs.putUChar(key, idx);
+    Serial.printf("[STICKY] saved assign=%02X idx=%u\n", assign, idx);
+}
+
+static bool send_volume_index(uint8_t slot, uint8_t index)
+{
+    if (!dsp || slot >= NUM_SLOTS)
+        return false;
+
+    VolumeModel &vm = volume[slot];
+    if (!vm.valid)
+        return false;
+
+    if (index > vm.steps)
+        index = vm.steps;
+
+    vm.index = index;
+
+    uint8_t volCode = (uint8_t)(VOL_MIN + vm.index + slot);
+
+    const uint8_t wake[] = { 0x42, 0x06 };
+    dsp->write(wake, sizeof(wake));
+    dsp->flush();
+    delayMicroseconds(FRAME_DELAY_US);
+
+    uint8_t body[] = {
+        0xF9, 0x01, 0x2B, 0x04,
+        slot,
+        vm.index,
+        0x01,
+        volCode
+    };
+
+    printHex("[TX VOL]", body, sizeof(body));
+    dsp->write(body, sizeof(body));
+    dsp->flush();
+    return true;
+}
+
+static void apply_sticky_to_slot(uint8_t slot, bool push_to_dsp)
+{
+    if (slot >= NUM_SLOTS)
+        return;
+
+    VolumeModel &vm = volume[slot];
+    if (!vm.valid || !stickyValid[vm.assign])
+        return;
+
+    uint8_t want = stickyIndex[vm.assign];
+    if (want > vm.steps)
+        want = vm.steps;
+
+    if (vm.index == want && !push_to_dsp)
+        return;
+
+    Serial.printf(
+        "[STICKY] restore slot=%u assign=%02X idx=%u (dsp had %u) push=%d\n",
+        slot, vm.assign, want, vm.index, (int)push_to_dsp
+    );
+
+    if (push_to_dsp && ready)
+        send_volume_index(slot, want);
+    else
+        vm.index = want;
+
+    if (slot == activeSlot) {
+        int ui = map(vm.index, 0, vm.steps, 0, 100);
+        dial_page_set_absolute(ui);
+    }
+}
+
+static void reassert_sticky_volumes(bool force_digital)
+{
+    for (int s = 0; s < NUM_SLOTS; s++) {
+        VolumeModel &vm = volume[s];
+        if (!vm.valid || !stickyValid[vm.assign])
+            continue;
+
+        uint8_t want = stickyIndex[vm.assign];
+        if (want > vm.steps)
+            want = vm.steps;
+
+        // Digital Input Volume is restored by the DSP on ACO source switch; force
+        // a push when the user lands on that control or ownership becomes READY.
+        if ((force_digital && vm.assign == ASSIGN_DIGITAL) || vm.index != want)
+            apply_sticky_to_slot((uint8_t)s, true);
+    }
 }
 
 static void printHex(const char* tag, const uint8_t* buf, size_t len)
@@ -174,6 +316,9 @@ static void decode_volume_blob(const uint8_t *buf)
         vm.step_dB  = range_dB / steps;
         vm.valid    = true;
 
+        // Restore any previously saved user level for this assign.
+        sticky_load_assign(assign);
+
         // ---- SLOT COLOR ----
         uint8_t r = buf[o + 1];
         uint8_t g = buf[o + 2];
@@ -212,6 +357,7 @@ static void decode_volume_blob(const uint8_t *buf)
 static void decode_volume_snapshot(const uint8_t *buf)
 {
     const int SNAP_BASE = 6;
+    bool need_reassert = false;
 
     for (int s = 0; s < NUM_SLOTS; s++) {
 
@@ -223,20 +369,42 @@ static void decode_volume_snapshot(const uint8_t *buf)
         if (idx > vm.steps)
             idx = vm.steps;
 
-        vm.index = idx;
+        // Prefer last user-set level over DSP snapshot (Digital resets on plug-in).
+        if (stickyValid[vm.assign]) {
+            uint8_t want = stickyIndex[vm.assign];
+            if (want > vm.steps)
+                want = vm.steps;
 
-        Serial.printf(
-            "[SNAP] slot=%d idx=%d %s\n",
-            s,
-            vm.index,
-            (s == activeSlot) ? "<ACTIVE>" : ""
-        );
+            Serial.printf(
+                "[SNAP] slot=%d dsp=%u sticky=%u %s\n",
+                s,
+                idx,
+                want,
+                (s == activeSlot) ? "<ACTIVE>" : ""
+            );
+
+            vm.index = want;
+            if (idx != want)
+                need_reassert = true;
+        } else {
+            vm.index = idx;
+
+            Serial.printf(
+                "[SNAP] slot=%d idx=%d %s\n",
+                s,
+                vm.index,
+                (s == activeSlot) ? "<ACTIVE>" : ""
+            );
+        }
 
         if (s == activeSlot) {
             int ui = map(vm.index, 0, vm.steps, 0, 100);
             dial_page_set_absolute(ui);
         }
     }
+
+    if (need_reassert && ready)
+        reassert_sticky_volumes(false);
 }
 
 
@@ -271,7 +439,13 @@ void helix_set_active_slot(uint8_t slot)
         slot_label_from_assign(vm.assign)
     );
 
-    // ---- Update UI value (authoritative snapshot) ----
+    // When landing on Digital Level (e.g. after phone plug / source switch),
+    // force the last user-set level onto the DSP and the dial.
+    if (vm.assign == ASSIGN_DIGITAL && stickyValid[vm.assign])
+        apply_sticky_to_slot(slot, true);
+    else if (stickyValid[vm.assign])
+        apply_sticky_to_slot(slot, false);
+
     int ui = map(vm.index, 0, vm.steps, 0, 100);
     dial_page_set_absolute(ui);
 
@@ -347,6 +521,11 @@ static void processFrame()
             resetHandshake();
             return;
         }
+
+        // Source / ownership traffic while live: re-push Digital Level so ACO
+        // input auto-switch cannot leave the DSP at the low default index.
+        if (ready && handshakeLocked && reason != 0x00)
+            reassert_sticky_volumes(true);
     }
 
     printHex("[RX]", capBuf, capLen);
@@ -425,6 +604,9 @@ static void processFrame()
             ready = true;                 // ← CRITICAL
             handshakeInProgress = false;  // handshake is functionally done
 
+            // Snapshot ran before READY; push sticky Digital/etc. now.
+            reassert_sticky_volumes(true);
+
             hsState = HS_WAIT_FD_CHALLENGE;
             Serial.println("[HELIX] HS7 ACK, READY asserted");
         }
@@ -435,9 +617,10 @@ static void processFrame()
             dsp->write(HS_FD_REPLY, sizeof(HS_FD_REPLY));
             dsp->flush();
             Serial.println("[HELIX] FD challenge answered");
-           handshakeLocked = true;
+            handshakeLocked = true;
             handshakeInProgress = false;
             hsState = HS_READY;
+            reassert_sticky_volumes(true);
             Serial.println("[HELIX] READY (ownership latched)");
             break;
         }
@@ -447,6 +630,7 @@ static void processFrame()
             handshakeLocked = true;
             handshakeInProgress = false;
             hsState = HS_READY;
+            reassert_sticky_volumes(true);
             Serial.println("[HELIX] READY (no FD challenge)");
         }
         break;
@@ -513,26 +697,10 @@ void helix_volume_delta(int8_t clicks)
     if (next > vm.steps)    next = vm.steps;
     if (next == vm.index)   return;
 
-    vm.index = (uint8_t)next;
+    if (!send_volume_index(activeSlot, (uint8_t)next))
+        return;
 
-    uint8_t volCode = VOL_MIN + vm.index + activeSlot;
-
-    const uint8_t wake[] = { 0x42, 0x06 };
-    dsp->write(wake, sizeof(wake));
-    dsp->flush();
-    delayMicroseconds(FRAME_DELAY_US);
-
-    uint8_t body[] = {
-        0xF9, 0x01, 0x2B, 0x04,
-        activeSlot,     // ← slot selector (0–3)
-        vm.index,
-        0x01,
-        volCode
-    };
-
-    printHex("[TX VOL]", body, sizeof(body));
-    dsp->write(body, sizeof(body));
-    dsp->flush();
+    sticky_save_assign(vm.assign, vm.index);
 
     int ui = map(vm.index, 0, vm.steps, 0, 100);
     dial_page_set_absolute(ui);
